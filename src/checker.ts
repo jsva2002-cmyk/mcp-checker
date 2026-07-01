@@ -563,7 +563,10 @@ program
   .argument('<url>', 'MCP server endpoint (Streamable HTTP transport)')
   .option('--ai', 'Run AI-powered Layer 2 reasoning checks (requires ANTHROPIC_API_KEY in .env)')
   .action(async (url: string, options: { ai?: boolean }) => {
-    await checkServer(url, options.ai ?? false);
+    // npm consumes --ai as a config flag (npm_config_ai=true) instead of
+    // forwarding it to the script, so we check both sources.
+    const runAi = Boolean(options.ai) || process.env.npm_config_ai === 'true';
+    await checkServer(url, runAi);
   });
 
 program.parseAsync(process.argv).catch(err => {

@@ -9,7 +9,8 @@
   "scripts": {
     "build": "tsc",
     "start": "tsx src/checker.ts",
-    "check": "tsx src/checker.ts"
+    "check": "tsx src/checker.ts",
+    "check:ai": "tsx src/checker.ts --ai"
   },
   "keywords": [
     "mcp",
