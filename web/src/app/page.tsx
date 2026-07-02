@@ -82,7 +82,7 @@ export default function Home() {
           </form>
 
           <p className="mt-4 text-center text-xs text-slate-600">
-            No account required · Free to use · Works on any public MCP server
+            10 free checks per hour · No account required · Works on any public MCP server
           </p>
         </div>
       </div>

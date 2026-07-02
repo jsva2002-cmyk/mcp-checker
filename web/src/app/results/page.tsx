@@ -51,6 +51,21 @@ function Spinner({ label }: { label: string }) {
   );
 }
 
+const RATE_LIMIT_MESSAGE = "You've reached the limit of 10 checks per hour. Please wait before running another check.";
+
+class ApiError extends Error {
+  status: number;
+  constructor(message: string, status: number) {
+    super(message);
+    this.status = status;
+  }
+}
+
+function friendlyErrorMessage(e: unknown): string {
+  if (e instanceof ApiError && e.status === 429) return RATE_LIMIT_MESSAGE;
+  return e instanceof Error ? e.message : 'Failed to connect';
+}
+
 function SectionHeader({ title, badge }: { title: string; badge?: React.ReactNode }) {
   return (
     <div className="flex items-center gap-3 mb-4">
@@ -340,7 +355,7 @@ function ResultsContent() {
     })
       .then(async r => {
         const data = await r.json();
-        if (!r.ok) throw new Error((data as { error: string }).error ?? `HTTP ${r.status}`);
+        if (!r.ok) throw new ApiError((data as { error: string }).error ?? `HTTP ${r.status}`, r.status);
         return data as Layer1Report;
       })
       .then(data => {
@@ -357,11 +372,11 @@ function ResultsContent() {
           })
             .then(async r => {
               const d = await r.json();
-              if (!r.ok) throw new Error((d as { error: string }).error ?? `HTTP ${r.status}`);
+              if (!r.ok) throw new ApiError((d as { error: string }).error ?? `HTTP ${r.status}`, r.status);
               return d as Layer2Report;
             })
             .then(d => { setLayer2(d); setLayer2Loading(false); })
-            .catch(e => { setLayer2Error(e instanceof Error ? e.message : 'Layer 2 failed'); setLayer2Loading(false); });
+            .catch(e => { setLayer2Error(friendlyErrorMessage(e)); setLayer2Loading(false); });
         }
       })
       .catch(e => {
@@ -372,7 +387,7 @@ function ResultsContent() {
         setLayer1Error(
           e.name === 'AbortError'
             ? 'Connection timed out after 60 s'
-            : e instanceof Error ? e.message : 'Failed to connect',
+            : friendlyErrorMessage(e),
         );
         setLayer1Loading(false);
       });

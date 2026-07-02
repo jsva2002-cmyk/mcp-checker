@@ -1,9 +1,15 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { runLayer1 } from '@/lib/layer1';
+import { checkRateLimit, getClientIp, rateLimitResponse } from '@/lib/rateLimit';
 
 export const maxDuration = 60;
 
 export async function POST(request: NextRequest) {
+  const { allowed } = await checkRateLimit(getClientIp(request));
+  if (!allowed) {
+    return rateLimitResponse();
+  }
+
   try {
     const body = await request.json() as { url?: string };
     const { url } = body;
