@@ -66,6 +66,16 @@ function friendlyErrorMessage(e: unknown): string {
   return e instanceof Error ? e.message : 'Failed to connect';
 }
 
+function ErrorBox({ message, defaultHeader }: { message: string; defaultHeader: string }) {
+  const isRateLimit = message === RATE_LIMIT_MESSAGE;
+  return (
+    <div className="bg-red-500/10 border border-red-500/30 rounded-xl p-4 text-red-400 text-sm">
+      <div className="font-semibold mb-1">{isRateLimit ? 'Rate limit reached' : defaultHeader}</div>
+      {message}
+    </div>
+  );
+}
+
 function SectionHeader({ title, badge }: { title: string; badge?: React.ReactNode }) {
   return (
     <div className="flex items-center gap-3 mb-4">
@@ -432,10 +442,7 @@ function ResultsContent() {
         {/* Layer 1 */}
         {layer1Loading && <Layer1Skeleton />}
         {layer1Error && !layer1 && !layer1Loading && (
-          <div className="bg-red-500/10 border border-red-500/30 rounded-xl p-4 text-red-400 text-sm">
-            <div className="font-semibold mb-1">Connection failed</div>
-            {layer1Error}
-          </div>
+          <ErrorBox message={layer1Error} defaultHeader="Connection failed" />
         )}
         {layer1 && !layer1Loading && <Layer1Section report={layer1} />}
 
@@ -446,10 +453,7 @@ function ResultsContent() {
           </div>
         )}
         {layer2Error && (
-          <div className="bg-red-500/10 border border-red-500/30 rounded-xl p-4 text-red-400 text-sm">
-            <div className="font-semibold mb-1">Layer 2 failed</div>
-            {layer2Error}
-          </div>
+          <ErrorBox message={layer2Error} defaultHeader="Layer 2 failed" />
         )}
         {layer2 && <Layer2Section report={layer2} />}
 
