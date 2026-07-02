@@ -1,6 +1,8 @@
 import Anthropic from '@anthropic-ai/sdk';
 import { z } from 'zod';
-import type { ToolInfo, Layer2Report, ClarityResult, ConfusionPair, SimulationResult } from './types';
+import type { ToolInfo, Layer2Report, ClarityResult, ConfusionPair, SimulationResult, SuggestedFix } from './types';
+
+const CLARITY_FIX_THRESHOLD = 7;
 
 // ─── Zod schemas for Claude responses ────────────────────────────────────────
 
@@ -26,6 +28,10 @@ const ScenariosResponseSchema = z.array(z.object({
 const ToolPickResponseSchema = z.object({
   tool:      z.string(),
   arguments: z.record(z.string(), z.unknown()).optional(),
+});
+
+const FixResponseSchema = z.object({
+  suggestedDescription: z.string(),
 });
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -149,6 +155,89 @@ Respond with a JSON array of exactly 5 items:
   });
 }
 
+// ─── Check 4: Suggested Fixes for low-clarity tools ──────────────────────────
+
+async function generateFix(
+  tool: ToolInfo,
+  clarity: ClarityResult,
+  partner: ToolInfo | undefined,
+  confusionReason: string | undefined,
+  anthropic: Anthropic,
+): Promise<string> {
+  const prompt = partner
+    ? `Rewrite the description of the MCP tool "${tool.name}" to fix a clarity problem and to eliminate confusion with a similar tool.
+
+Tool to fix:
+Name: ${tool.name}
+Description: ${tool.description ?? '(no description)'}
+Input schema: ${JSON.stringify(tool.inputSchema, null, 2)}
+
+Clarity score: ${clarity.score}/10
+Clarity verdict: ${clarity.verdict}
+
+Tool it gets confused with:
+Name: ${partner.name}
+Description: ${partner.description ?? '(no description)'}
+Input schema: ${JSON.stringify(partner.inputSchema, null, 2)}
+
+Reason for confusion: ${confusionReason}
+
+Write a new description for "${tool.name}" ONLY. It must explicitly clarify how "${tool.name}" differs from "${partner.name}" so an AI agent can reliably pick the correct one. Keep it concise (1-3 sentences).
+
+Respond with JSON: {"suggestedDescription":"<new description>"}`
+    : `Rewrite the description of the MCP tool "${tool.name}" to fix a clarity problem.
+
+Tool to fix:
+Name: ${tool.name}
+Description: ${tool.description ?? '(no description)'}
+Input schema: ${JSON.stringify(tool.inputSchema, null, 2)}
+
+Clarity score: ${clarity.score}/10
+Clarity verdict: ${clarity.verdict}
+
+Write a new description that fixes the issue above so an AI agent reliably knows when to use this tool and what arguments to pass. Keep it concise (1-3 sentences).
+
+Respond with JSON: {"suggestedDescription":"<new description>"}`;
+
+  const text = await callClaude(
+    anthropic,
+    'You rewrite MCP tool descriptions to make them clearer for AI agents. Respond only with valid JSON — no prose, no markdown.',
+    prompt,
+    512,
+  );
+  return FixResponseSchema.parse(extractJSON(text)).suggestedDescription;
+}
+
+async function check4SuggestedFixes(
+  tools: ToolInfo[],
+  clarity: ClarityResult[],
+  confusedPairs: ConfusionPair[],
+  anthropic: Anthropic,
+): Promise<SuggestedFix[]> {
+  const lowScoring = clarity.filter(c => Math.round(c.score) < CLARITY_FIX_THRESHOLD);
+  if (lowScoring.length === 0) return [];
+
+  const toolByName = new Map(tools.map(t => [t.name, t]));
+
+  const fixes = await Promise.all(lowScoring.map(async c => {
+    const tool = toolByName.get(c.name);
+    if (!tool) return null;
+
+    const pair = confusedPairs.find(p => p.tool1 === c.name || p.tool2 === c.name);
+    const partnerName = pair ? (pair.tool1 === c.name ? pair.tool2 : pair.tool1) : undefined;
+    const partner = partnerName ? toolByName.get(partnerName) : undefined;
+
+    const suggestedDescription = await generateFix(tool, c, partner, pair?.reason, anthropic);
+    return {
+      name:                  c.name,
+      originalDescription:   tool.description ?? '(no description)',
+      suggestedDescription,
+    };
+  }));
+
+  return fixes.filter((f): f is SuggestedFix => f !== null);
+}
+
 // ─── Main export ──────────────────────────────────────────────────────────────
 
 export async function runLayer2(tools: ToolInfo[], apiKey: string): Promise<Layer2Report> {
@@ -160,12 +249,17 @@ export async function runLayer2(tools: ToolInfo[], apiKey: string): Promise<Laye
     check2Confusion(tools, anthropic),
   ]);
 
-  const simulation = await check3Simulation(tools, anthropic);
+  // Simulation + suggested fixes each depend only on the results above, so run in parallel.
+  const [simulation, suggestedFixes] = await Promise.all([
+    check3Simulation(tools, anthropic),
+    check4SuggestedFixes(tools, clarity, confusedPairs, anthropic),
+  ]);
 
   return {
     clarity,
     confusedPairs,
     simulation,
     simulationScore: simulation.filter(s => s.correct).length,
+    suggestedFixes,
   };
 }

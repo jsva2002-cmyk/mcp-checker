@@ -125,6 +125,14 @@ interface SimulationResult {
   correct:      boolean;
 }
 
+interface SuggestedFix {
+  name:                  string;
+  originalDescription:   string;
+  suggestedDescription:  string;
+}
+
+const CLARITY_FIX_THRESHOLD = 7;
+
 // ─── Layer 1: Schema validation ───────────────────────────────────────────────
 
 function validateSchema(schema: unknown): { passed: boolean; errors?: string[] } {
@@ -195,6 +203,10 @@ const ScenariosResponseSchema = z.array(z.object({
 const ToolPickResponseSchema = z.object({
   tool:      z.string(),
   arguments: z.record(z.string(), z.unknown()).optional(),
+});
+
+const FixResponseSchema = z.object({
+  suggestedDescription: z.string(),
 });
 
 // ─── Layer 2: AI helpers ──────────────────────────────────────────────────────
@@ -329,6 +341,89 @@ Respond with a JSON array of exactly 5 items:
   });
 }
 
+// ─── Layer 2: Check 4 — Suggested Fixes for low-clarity tools ────────────────
+
+async function generateFix(
+  tool: McpTool,
+  clarity: ClarityResult,
+  partner: McpTool | undefined,
+  confusionReason: string | undefined,
+  anthropic: Anthropic,
+): Promise<string> {
+  const prompt = partner
+    ? `Rewrite the description of the MCP tool "${tool.name}" to fix a clarity problem and to eliminate confusion with a similar tool.
+
+Tool to fix:
+Name: ${tool.name}
+Description: ${tool.description ?? '(no description)'}
+Input schema: ${JSON.stringify(tool.inputSchema, null, 2)}
+
+Clarity score: ${clarity.score}/10
+Clarity verdict: ${clarity.verdict}
+
+Tool it gets confused with:
+Name: ${partner.name}
+Description: ${partner.description ?? '(no description)'}
+Input schema: ${JSON.stringify(partner.inputSchema, null, 2)}
+
+Reason for confusion: ${confusionReason}
+
+Write a new description for "${tool.name}" ONLY. It must explicitly clarify how "${tool.name}" differs from "${partner.name}" so an AI agent can reliably pick the correct one. Keep it concise (1-3 sentences).
+
+Respond with JSON: {"suggestedDescription":"<new description>"}`
+    : `Rewrite the description of the MCP tool "${tool.name}" to fix a clarity problem.
+
+Tool to fix:
+Name: ${tool.name}
+Description: ${tool.description ?? '(no description)'}
+Input schema: ${JSON.stringify(tool.inputSchema, null, 2)}
+
+Clarity score: ${clarity.score}/10
+Clarity verdict: ${clarity.verdict}
+
+Write a new description that fixes the issue above so an AI agent reliably knows when to use this tool and what arguments to pass. Keep it concise (1-3 sentences).
+
+Respond with JSON: {"suggestedDescription":"<new description>"}`;
+
+  const text = await callClaude(
+    anthropic,
+    'You rewrite MCP tool descriptions to make them clearer for AI agents. Respond only with valid JSON — no prose, no markdown.',
+    prompt,
+    512,
+  );
+  return FixResponseSchema.parse(extractJSON(text)).suggestedDescription;
+}
+
+async function check4SuggestedFixes(
+  tools: McpTool[],
+  clarity: ClarityResult[],
+  confusedPairs: ConfusionPair[],
+  anthropic: Anthropic,
+): Promise<SuggestedFix[]> {
+  const lowScoring = clarity.filter(c => Math.round(c.score) < CLARITY_FIX_THRESHOLD);
+  if (lowScoring.length === 0) return [];
+
+  const toolByName = new Map(tools.map(t => [t.name, t]));
+
+  const fixes = await Promise.all(lowScoring.map(async c => {
+    const tool = toolByName.get(c.name);
+    if (!tool) return null;
+
+    const pair = confusedPairs.find(p => p.tool1 === c.name || p.tool2 === c.name);
+    const partnerName = pair ? (pair.tool1 === c.name ? pair.tool2 : pair.tool1) : undefined;
+    const partner = partnerName ? toolByName.get(partnerName) : undefined;
+
+    const suggestedDescription = await generateFix(tool, c, partner, pair?.reason, anthropic);
+    return {
+      name:                  c.name,
+      originalDescription:   tool.description ?? '(no description)',
+      suggestedDescription,
+    };
+  }));
+
+  return fixes.filter((f): f is SuggestedFix => f !== null);
+}
+
 // ─── Layer 2: orchestrator ────────────────────────────────────────────────────
 
 async function runLayer2Checks(tools: McpTool[], anthropic: Anthropic): Promise<void> {
@@ -337,27 +432,56 @@ async function runLayer2Checks(tools: McpTool[], anthropic: Anthropic): Promise<
   console.log(`${BOLD}  Layer 2 — AI Reasoning Checks${RESET}  ${DIM}(claude-haiku-4-5)${RESET}`);
   divider('═');
 
+  // Clarity and confusion are computed together (before either is printed) so that
+  // suggested fixes for low-clarity tools can reference their confusion pair, if any.
+  let clarityResults: ClarityResult[] | undefined;
+  let clarityErr: string | undefined;
+  let confusedPairs: ConfusionPair[] = [];
+  let confusionErr: string | undefined;
+
+  const runConfusion = tools.length >= 2;
+
+  step('Analysing clarity + confusion');
+  const [clarityOutcome, confusionOutcome] = await Promise.allSettled([
+    check1Clarity(tools, anthropic),
+    runConfusion ? check2Confusion(tools, anthropic) : Promise.resolve([] as ConfusionPair[]),
+  ]);
+
+  if (clarityOutcome.status === 'fulfilled') clarityResults = clarityOutcome.value;
+  else clarityErr = clarityOutcome.reason instanceof Error ? clarityOutcome.reason.message : String(clarityOutcome.reason);
+
+  if (confusionOutcome.status === 'fulfilled') confusedPairs = confusionOutcome.value;
+  else confusionErr = confusionOutcome.reason instanceof Error ? confusionOutcome.reason.message : String(confusionOutcome.reason);
+
+  let fixes: SuggestedFix[] = [];
+  if (clarityResults) {
+    try {
+      fixes = await check4SuggestedFixes(tools, clarityResults, confusedPairs, anthropic);
+    } catch { /* suggested fixes are best-effort; ignore failures */ }
+  }
+  const fixByName = new Map(fixes.map(f => [f.name, f]));
+  stepDoneCustom('Analysing clarity + confusion… ', `${GREEN}done${RESET}`);
+
   // ── Check 1: Description Clarity ─────────────────────────────────────────
   console.log(`\n  ${BOLD}CHECK 1 · DESCRIPTION CLARITY${RESET}\n`);
   divider();
   console.log();
 
-  try {
-    step('Analysing clarity');
-    const results = await check1Clarity(tools, anthropic);
-    stepDoneCustom('Analysing clarity… ', `${GREEN}done${RESET}`);
-    console.log();
-
-    for (let i = 0; i < results.length; i++) {
-      const r     = results[i];
+  if (clarityErr) {
+    console.log(`  ${RED}Check 1 failed: ${clarityErr}${RESET}\n`);
+  } else if (clarityResults) {
+    for (let i = 0; i < clarityResults.length; i++) {
+      const r     = clarityResults[i];
       const score = Math.round(r.score);
       const color = score >= 8 ? GREEN : score >= 5 ? YELLOW : RED;
-      console.log(`  ${BOLD}[${i + 1}/${results.length}] ${r.name}${RESET}`);
+      console.log(`  ${BOLD}[${i + 1}/${clarityResults.length}] ${r.name}${RESET}`);
       console.log(`       Clarity: ${color}${BOLD}${score}/10${RESET}  — ${r.verdict}`);
+      const fix = fixByName.get(r.name);
+      if (fix) {
+        console.log(`       ${GREEN}Suggested fix:${RESET} ${fix.suggestedDescription}`);
+      }
       console.log();
     }
-  } catch (err) {
-    console.log(`\r  ${RED}Check 1 failed: ${err instanceof Error ? err.message : String(err)}${RESET}\n`);
   }
 
   // ── Check 2: Tool Confusion Detection ────────────────────────────────────
@@ -366,25 +490,16 @@ async function runLayer2Checks(tools: McpTool[], anthropic: Anthropic): Promise<
   divider();
   console.log();
 
-  if (tools.length < 2) {
+  if (!runConfusion) {
     console.log(`  ${YELLOW}⚠  Only ${tools.length} tool — no pairs to compare.${RESET}\n`);
+  } else if (confusionErr) {
+    console.log(`  ${RED}Check 2 failed: ${confusionErr}${RESET}\n`);
+  } else if (confusedPairs.length === 0) {
+    console.log(`  ${GREEN}✓ No confused tool pairs detected.${RESET}\n`);
   } else {
-    try {
-      step('Detecting confusion');
-      const pairs = await check2Confusion(tools, anthropic);
-      stepDoneCustom('Detecting confusion… ', `${GREEN}done${RESET}`);
-      console.log();
-
-      if (pairs.length === 0) {
-        console.log(`  ${GREEN}✓ No confused tool pairs detected.${RESET}\n`);
-      } else {
-        for (const p of pairs) {
-          console.log(`  ${YELLOW}⚠ ${BOLD}${p.tool1}${RESET}${YELLOW} ↔ ${BOLD}${p.tool2}${RESET}`);
-          console.log(`    ${p.reason}\n`);
-        }
-      }
-    } catch (err) {
-      console.log(`\r  ${RED}Check 2 failed: ${err instanceof Error ? err.message : String(err)}${RESET}\n`);
+    for (const p of confusedPairs) {
+      console.log(`  ${YELLOW}⚠ ${BOLD}${p.tool1}${RESET}${YELLOW} ↔ ${BOLD}${p.tool2}${RESET}`);
+      console.log(`    ${p.reason}\n`);
     }
   }
 

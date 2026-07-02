@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { runLayer1 } from '@/lib/layer1';
 
-export const maxDuration = 30;
+export const maxDuration = 60;
 
 export async function POST(request: NextRequest) {
   try {

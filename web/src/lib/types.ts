@@ -42,9 +42,16 @@ export interface SimulationResult {
   correct: boolean;
 }
 
+export interface SuggestedFix {
+  name: string;
+  originalDescription: string;
+  suggestedDescription: string;
+}
+
 export interface Layer2Report {
   clarity: ClarityResult[];
   confusedPairs: ConfusionPair[];
   simulation: SimulationResult[];
   simulationScore: number;
+  suggestedFixes: SuggestedFix[];
 }

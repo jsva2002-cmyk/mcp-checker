@@ -3,7 +3,7 @@
 import { Suspense, useEffect, useState } from 'react';
 import { useSearchParams, useRouter } from 'next/navigation';
 import Link from 'next/link';
-import type { Layer1Report, Layer2Report, ClarityResult, ConfusionPair, SimulationResult } from '@/lib/types';
+import type { Layer1Report, Layer2Report, ClarityResult, ConfusionPair, SimulationResult, SuggestedFix } from '@/lib/types';
 
 // ─── Small shared atoms ───────────────────────────────────────────────────────
 
@@ -147,14 +147,47 @@ function Layer1Skeleton() {
 
 // ─── Layer 2 display ──────────────────────────────────────────────────────────
 
-function ClarityRow({ result }: { result: ClarityResult }) {
+function SuggestedFixBox({ fix }: { fix: SuggestedFix }) {
+  const [copied, setCopied] = useState(false);
+
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(fix.suggestedDescription);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    } catch {
+      // clipboard access denied — nothing to do, text is still selectable
+    }
+  };
+
   return (
-    <div className="flex items-start gap-3 py-3 border-b border-slate-800 last:border-0">
-      <ScoreBadge score={result.score} />
-      <div className="flex-1 min-w-0">
-        <div className="font-mono text-sm text-slate-200 mb-0.5">{result.name}</div>
-        <div className="text-xs text-slate-400 leading-relaxed">{result.verdict}</div>
+    <div className="mt-2 bg-emerald-500/5 border border-emerald-500/20 rounded-lg p-3">
+      <div className="flex items-center justify-between gap-2 mb-1.5">
+        <span className="text-xs font-semibold text-emerald-400 uppercase tracking-wide">Suggested fix</span>
+        <button
+          onClick={copy}
+          className="text-xs px-2 py-0.5 rounded border border-emerald-500/30 text-emerald-300
+                     hover:bg-emerald-500/10 transition-colors"
+        >
+          {copied ? 'Copied!' : 'Copy'}
+        </button>
       </div>
+      <p className="text-xs text-emerald-200/90 leading-relaxed">{fix.suggestedDescription}</p>
+    </div>
+  );
+}
+
+function ClarityRow({ result, fix }: { result: ClarityResult; fix?: SuggestedFix }) {
+  return (
+    <div className="py-3 border-b border-slate-800 last:border-0">
+      <div className="flex items-start gap-3">
+        <ScoreBadge score={result.score} />
+        <div className="flex-1 min-w-0">
+          <div className="font-mono text-sm text-slate-200 mb-0.5">{result.name}</div>
+          <div className="text-xs text-slate-400 leading-relaxed">{result.verdict}</div>
+        </div>
+      </div>
+      {fix && <SuggestedFixBox fix={fix} />}
     </div>
   );
 }
@@ -209,6 +242,7 @@ function SimulationRow({ sim, index }: { sim: SimulationResult; index: number })
 function Layer2Section({ report }: { report: Layer2Report }) {
   const simTotal = report.simulation.length;
   const simPassed = report.simulationScore;
+  const fixByName = new Map(report.suggestedFixes.map(f => [f.name, f]));
 
   return (
     <section className="space-y-6">
@@ -223,7 +257,7 @@ function Layer2Section({ report }: { report: Layer2Report }) {
           Check 1 · Description Clarity
         </h3>
         <div className="bg-slate-900 border border-slate-800 rounded-xl px-4 divide-y divide-slate-800">
-          {report.clarity.map(r => <ClarityRow key={r.name} result={r} />)}
+          {report.clarity.map(r => <ClarityRow key={r.name} result={r} fix={fixByName.get(r.name)} />)}
         </div>
       </div>
 
@@ -284,7 +318,8 @@ function ResultsContent() {
     if (!url) { router.push('/'); return; }
 
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 30_000);
+    const timer = setTimeout(() => controller.abort(), 60_000);
+    let cleanedUp = false;
 
     setLayer1Loading(true);
     setLayer1Error(null);
@@ -323,15 +358,18 @@ function ResultsContent() {
       })
       .catch(e => {
         clearTimeout(timer);
+        // Ignore aborts caused by the effect cleanup (e.g. React Strict Mode double-invoke).
+        // Only update state for real failures: HTTP errors or the 60 s timeout firing.
+        if (cleanedUp) return;
         setLayer1Error(
           e.name === 'AbortError'
-            ? 'Connection timed out after 30 s'
+            ? 'Connection timed out after 60 s'
             : e instanceof Error ? e.message : 'Failed to connect',
         );
         setLayer1Loading(false);
       });
 
-    return () => { controller.abort(); clearTimeout(timer); };
+    return () => { cleanedUp = true; controller.abort(); clearTimeout(timer); };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [url, runAi]);
 
@@ -370,7 +408,7 @@ function ResultsContent() {
 
         {/* Layer 1 */}
         {layer1Loading && <Layer1Skeleton />}
-        {layer1Error && (
+        {layer1Error && !layer1 && !layer1Loading && (
           <div className="bg-red-500/10 border border-red-500/30 rounded-xl p-4 text-red-400 text-sm">
             <div className="font-semibold mb-1">Connection failed</div>
             {layer1Error}
