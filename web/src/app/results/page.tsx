@@ -290,6 +290,9 @@ function Layer2Section({ report }: { report: Layer2Report }) {
             {simPassed}/{simTotal} passed
           </span>
         </h3>
+        <p className="text-xs text-slate-600 mb-3 normal-case">
+          Tool selection tested at temperature 0 for consistent, reproducible results.
+        </p>
         {showConfusionCaveat && (
           <p className="text-xs text-slate-500 leading-relaxed mb-3 normal-case">
             {simPassed}/{simTotal} passed on this run — confusion risk flagged above may surface on

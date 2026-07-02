@@ -86,12 +86,14 @@ async function callClaude(
   system: string,
   user: string,
   maxTokens = 1024,
+  temperature?: number,
 ): Promise<string> {
   const res = await anthropic.messages.create({
     model:      'claude-haiku-4-5-20251001',
     max_tokens: maxTokens,
     system,
     messages:   [{ role: 'user', content: user }],
+    ...(temperature !== undefined ? { temperature } : {}),
   });
   const block = res.content.find(b => b.type === 'text');
   return block?.type === 'text' ? block.text : '';
@@ -160,6 +162,7 @@ Respond with a JSON array of exactly 5 items:
     .map(t => `• ${t.name}: ${t.description ?? '(no description)'}`)
     .join('\n');
 
+  // Temperature 0 makes tool selection deterministic so results are stable run to run.
   const picks = await Promise.all(
     scenarios.map(s =>
       callClaude(
@@ -167,6 +170,7 @@ Respond with a JSON array of exactly 5 items:
         'You are an AI agent selecting MCP tools. Respond only with valid JSON.',
         `Available tools:\n${toolMenu}\n\nUser request: "${s.request}"\n\nWhich tool would you use and what arguments would you pass?\nRespond with JSON: {"tool":"<tool_name>","arguments":{<key>:<value>,...}}`,
         512,
+        0,
       ),
     ),
   );
