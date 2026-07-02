@@ -243,6 +243,7 @@ function Layer2Section({ report }: { report: Layer2Report }) {
   const simTotal = report.simulation.length;
   const simPassed = report.simulationScore;
   const fixByName = new Map(report.suggestedFixes.map(f => [f.name, f]));
+  const showConfusionCaveat = report.confusedPairs.length > 0 && simTotal > 0 && simPassed === simTotal;
 
   return (
     <section className="space-y-6">
@@ -289,6 +290,13 @@ function Layer2Section({ report }: { report: Layer2Report }) {
             {simPassed}/{simTotal} passed
           </span>
         </h3>
+        {showConfusionCaveat && (
+          <p className="text-xs text-slate-500 leading-relaxed mb-3 normal-case">
+            {simPassed}/{simTotal} passed on this run — confusion risk flagged above may surface on
+            different user phrasings. Scenario simulation is one sample; confusion detection identifies
+            structural risk regardless of this run&rsquo;s outcome.
+          </p>
+        )}
         <div className="space-y-3">
           {report.simulation.map((sim, i) => <SimulationRow key={i} sim={sim} index={i} />)}
         </div>
