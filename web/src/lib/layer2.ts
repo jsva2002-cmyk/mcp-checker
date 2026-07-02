@@ -143,18 +143,36 @@ If no pairs are confused, return {"confusedPairs":[]}`,
 
 // ─── Check 3: Scenario Simulation ────────────────────────────────────────────
 
-async function check3Simulation(tools: ToolInfo[], anthropic: Anthropic): Promise<SimulationResult[]> {
+// More tools (or more flagged confusion pairs) means more ways for an agent to
+// pick the wrong tool, so sample more scenarios to get reliable coverage.
+function scenarioCount(toolCount: number, confusionPairCount: number): number {
+  if (toolCount >= 8 || confusionPairCount >= 5) return 12;
+  if (toolCount >= 4) return 8;
+  return 5;
+}
+
+async function check3Simulation(
+  tools: ToolInfo[],
+  confusedPairs: ConfusionPair[],
+  anthropic: Anthropic,
+): Promise<SimulationResult[]> {
+  const count = scenarioCount(tools.length, confusedPairs.length);
+
+  const confusionBlock = confusedPairs.length > 0
+    ? `\nThese tool pairs were flagged as easily confused. Include at least one scenario for each pair that is genuinely ambiguous between the two — a realistic request a careless agent might route to the wrong one:\n${confusedPairs.map(p => `• ${p.tool1} vs ${p.tool2}: ${p.reason}`).join('\n')}\n`
+    : '';
+
   const genText = await callClaude(
     anthropic,
     'You generate realistic test scenarios for MCP tools. Respond only with valid JSON.',
-    `Given these MCP tools, generate exactly 5 diverse, realistic user request scenarios. Each scenario must have a clear single correct tool.
-
+    `Given these MCP tools, generate exactly ${count} diverse, realistic user request scenarios. Each scenario must have a clear single correct tool.
+${confusionBlock}
 Tools:
 ${toolsToPromptText(tools)}
 
-Respond with a JSON array of exactly 5 items:
+Respond with a JSON array of exactly ${count} items:
 [{"request":"<user request>","expectedTool":"<tool_name>"}]`,
-    1024,
+    Math.max(1024, count * 200),
   );
   const scenarios = ScenariosResponseSchema.parse(extractJSON(genText));
 
@@ -292,7 +310,7 @@ export async function runLayer2(tools: ToolInfo[], apiKey: string): Promise<Laye
 
   // Simulation + suggested fixes each depend only on the results above, so run in parallel.
   const [simulation, suggestedFixes] = await Promise.all([
-    check3Simulation(tools, anthropic),
+    check3Simulation(tools, confusedPairs, anthropic),
     check4SuggestedFixes(tools, clarity, confusedPairs, anthropic),
   ]);
 
