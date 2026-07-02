@@ -247,10 +247,7 @@ function Layer2Section({ report }: { report: Layer2Report }) {
 
   return (
     <section className="space-y-6">
-      <SectionHeader
-        title="Layer 2 · AI Reasoning Checks"
-        badge={<span className="text-xs text-slate-500">claude-haiku-4-5</span>}
-      />
+      <SectionHeader title="Layer 2 · AI Reasoning Checks" />
 
       {/* Check 1: Clarity */}
       <div>
