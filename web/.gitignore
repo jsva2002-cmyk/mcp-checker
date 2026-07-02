@@ -3,3 +3,6 @@ node_modules/
 out/
 .env.local
 *.js.map
+
+.vercel
+.env*
