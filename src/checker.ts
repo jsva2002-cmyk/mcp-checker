@@ -485,7 +485,7 @@ async function check4SuggestedFixes(
 async function runLayer2Checks(tools: McpTool[], anthropic: Anthropic): Promise<void> {
   console.log();
   divider('═');
-  console.log(`${BOLD}  Layer 2 — AI Reasoning Checks${RESET}  ${DIM}(claude-haiku-4-5)${RESET}`);
+  console.log(`${BOLD}  Layer 2 — Behavior Validation${RESET}  ${DIM}(claude-haiku-4-5)${RESET}`);
   divider('═');
 
   // Clarity and confusion are computed together (before either is printed) so that
@@ -519,7 +519,7 @@ async function runLayer2Checks(tools: McpTool[], anthropic: Anthropic): Promise<
   stepDoneCustom('Analysing clarity + confusion… ', `${GREEN}done${RESET}`);
 
   // ── Check 1: Description Clarity ─────────────────────────────────────────
-  console.log(`\n  ${BOLD}CHECK 1 · DESCRIPTION CLARITY${RESET}\n`);
+  console.log(`\n  ${BOLD}CHECK 1 · CLARITY ANALYSIS${RESET}\n`);
   divider();
   console.log();
 
@@ -534,7 +534,7 @@ async function runLayer2Checks(tools: McpTool[], anthropic: Anthropic): Promise<
       console.log(`       Clarity: ${color}${BOLD}${score}/10${RESET}  — ${r.verdict}`);
       const fix = fixByName.get(r.name);
       if (fix) {
-        console.log(`       ${GREEN}Suggested fix:${RESET} ${fix.suggestedDescription}`);
+        console.log(`       ${GREEN}Recommended fix:${RESET} ${fix.suggestedDescription}`);
       }
       console.log();
     }
@@ -542,7 +542,7 @@ async function runLayer2Checks(tools: McpTool[], anthropic: Anthropic): Promise<
 
   // ── Check 2: Tool Confusion Detection ────────────────────────────────────
   divider();
-  console.log(`\n  ${BOLD}CHECK 2 · TOOL CONFUSION DETECTION${RESET}\n`);
+  console.log(`\n  ${BOLD}CHECK 2 · AMBIGUITY ANALYSIS${RESET}\n`);
   divider();
   console.log();
 
@@ -561,7 +561,7 @@ async function runLayer2Checks(tools: McpTool[], anthropic: Anthropic): Promise<
 
   // ── Check 3: Scenario Simulation ─────────────────────────────────────────
   divider();
-  console.log(`\n  ${BOLD}CHECK 3 · SCENARIO SIMULATION${RESET}\n`);
+  console.log(`\n  ${BOLD}CHECK 3 · COMPATIBILITY TESTING${RESET}\n`);
   divider();
   console.log();
 
@@ -730,10 +730,10 @@ const program = new Command();
 
 program
   .name('mcp-checker')
-  .description('Inspect an MCP server: list tools, validate schemas, and run AI reasoning checks')
+  .description('Inspect an MCP server: validate protocol schemas and run behavior validation checks')
   .version('1.0.0')
   .argument('<url>', 'MCP server endpoint (Streamable HTTP transport)')
-  .option('--ai', 'Run AI-powered Layer 2 reasoning checks (requires ANTHROPIC_API_KEY in .env)')
+  .option('--ai', 'Run Layer 2 behavior validation checks (requires ANTHROPIC_API_KEY in .env)')
   .action(async (url: string, options: { ai?: boolean }) => {
     // npm consumes --ai as a config flag (npm_config_ai=true) instead of
     // forwarding it to the script, so we check both sources.

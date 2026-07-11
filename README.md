@@ -1,18 +1,18 @@
 # MCP Checker
 
-Point it at an MCP server URL. Find out if an AI agent will actually pick the right tool — before your users do.
+Validate your MCP server before you ship.
 
 ## The problem
 
-MCP servers expose tools to AI agents through nothing but a name, a description, and a JSON Schema. There's no compiler, no type system, no test suite that catches "this description is ambiguous enough that Claude will call the wrong tool 30% of the time." The server works perfectly in every schema validator you throw at it — and still fails in production, silently, because an agent picked `list_files` when it meant `search_files`.
+MCP servers expose tools to agents through nothing but a name, a description, and a JSON Schema. There's no compiler, no type system, no test suite that catches "this description is ambiguous enough that an agent will call the wrong tool 30% of the time." The server passes every schema validator you throw at it — and still fails in production, silently, because an agent picked `list_files` when it meant `search_files`.
 
-Existing tools stop at structural validation: does `inputSchema` conform to JSON Schema, are required fields present, does the server respond to `tools/list`. That tells you the server is *well-formed*. It tells you nothing about whether the server is *usable* — whether an LLM reading these tool descriptions in a real conversation can reliably tell them apart.
+Existing tools stop at structural validation: does `inputSchema` conform to JSON Schema, are required fields present, does the server respond to `tools/list`. That tells you the server is *well-formed*. It tells you nothing about whether the server is *usable* — whether an agent reading these tool descriptions in a real conversation can reliably tell them apart and call them correctly.
 
 ## What makes it different
 
-- **Automatic scenario generation.** You don't write eval cases. MCP Checker generates realistic user requests from your actual tool set, then has an agent pick a tool for each one independently and checks whether it picked correctly — including scenarios specifically engineered to probe any tool pairs flagged as confusable.
-- **Zero setup.** No config file, no fixtures, no API mocking. One command, one URL, a full report.
-- **Two layers, one run.** Structural validation and AI-reasoning validation happen in the same pass, so you see both "is this schema valid" and "will an agent actually use it right" side by side.
+- **Zero setup.** No config files, no hand-written test cases. Paste a URL, get a full validation report.
+- **Compatibility testing, not just linting.** Realistic request scenarios are generated from your actual tool set, an agent picks a tool for each one independently, and the pick is checked against the correct answer — including scenarios specifically engineered to probe any tool pairs flagged as ambiguous.
+- **Two layers, one run.** Protocol validation and behavior validation happen in the same pass, so you see both "is this schema valid" and "will an agent actually call it correctly" side by side.
 
 ## Quick start
 
@@ -23,10 +23,10 @@ git clone <repo-url>
 cd mcp-checker
 npm install
 
-# Layer 1 only — schema validation, no API key needed
+# Layer 1 only — protocol validation, no API key needed
 npm run check https://mcp.deepwiki.com/mcp
 
-# Layer 1 + Layer 2 — adds AI reasoning checks (needs ANTHROPIC_API_KEY)
+# Layer 1 + Layer 2 — adds behavior validation (needs ANTHROPIC_API_KEY)
 npm run check https://mcp.deepwiki.com/mcp -- --ai
 ```
 
@@ -42,7 +42,7 @@ The web app is a hosted, zero-install version of the same checks: paste an MCP s
 
 **https://web-mu-two-87.vercel.app**
 
-Layer 1 runs for free with no limits beyond IP-based rate limiting (10 checks/hour). Layer 2 (AI checks) runs on the same request when you toggle it on.
+Layer 1 runs for free with no limits beyond IP-based rate limiting (10 checks/hour). Layer 2 runs on the same request when you toggle it on.
 
 ## Example output
 
@@ -78,10 +78,10 @@ Running against a real MCP server with 3 tools:
 ══════════════════════════════════════════════════════════
 
 ══════════════════════════════════════════════════════════
-  Layer 2 — AI Reasoning Checks  (claude-haiku-4-5)
+  Layer 2 — Behavior Validation  (claude-haiku-4-5)
 ══════════════════════════════════════════════════════════
 
-  CHECK 1 · DESCRIPTION CLARITY
+  CHECK 1 · CLARITY ANALYSIS
 
   [1/3] read_wiki_structure
        Clarity: 8/10  — Clear on what it lists, but doesn't say the topics
@@ -90,21 +90,21 @@ Running against a real MCP server with 3 tools:
   [2/3] read_wiki_contents
        Clarity: 5/10  — Doesn't specify whether page identifiers come from
        read_wiki_structure or the raw repo path — an agent may guess wrong.
-       Suggested fix: Retrieves the full markdown content of a specific wiki
-       page. Use this after read_wiki_structure to read a page's content —
-       not to list available topics.
+       Recommended fix: Retrieves the full markdown content of a specific
+       wiki page. Use this after read_wiki_structure to read a page's
+       content — not to list available topics.
 
   [3/3] ask_question
        Clarity: 9/10  — Clearly scoped to free-form Q&A, distinct from the
        two structured retrieval tools.
 
-  CHECK 2 · TOOL CONFUSION DETECTION
+  CHECK 2 · AMBIGUITY ANALYSIS
 
   ⚠ read_wiki_structure ↔ read_wiki_contents
     Both take only repoName and both mention "documentation" — an agent has
     no signal to distinguish topic-listing from content-retrieval.
 
-  CHECK 3 · SCENARIO SIMULATION
+  CHECK 3 · COMPATIBILITY TESTING
 
   Scenario 1: "What topics does the facebook/react wiki cover?"
     Expected: read_wiki_structure  →  Picked: read_wiki_structure  ✓
@@ -130,24 +130,24 @@ Running against a real MCP server with 3 tools:
 ══════════════════════════════════════════════════════════
 ```
 
-Scenario 2 is the failure the confusion check predicted: the agent had a specific page in mind but picked the topic-listing tool anyway, because nothing in either description said which tool to use once you already know the page you want.
+Scenario 2 is the failure the ambiguity check predicted: the agent had a specific page in mind but picked the topic-listing tool anyway, because nothing in either description said which tool to use once you already know the page you want.
 
 ## How it works
 
-### Layer 1 — Schema validation
+### Layer 1 — Protocol validation
 
 Connects to the server over MCP's Streamable HTTP transport, calls `tools/list`, and runs every tool's `inputSchema` through a full JSON Schema validator (built on Zod) that checks it's a well-formed `type: "object"` schema per the MCP spec — correct `properties`, `required`, nested `$ref`/`$defs`, composition keywords (`anyOf`/`oneOf`/`allOf`), the works. This is pure structural validation: no network calls beyond the MCP connection itself, no API key required, runs in milliseconds per tool.
 
-### Layer 2 — AI reasoning checks (`--ai`)
+### Layer 2 — Behavior validation (`--ai`)
 
-Layer 1 tells you the schema parses. Layer 2 tells you whether an agent can actually use it correctly, via four checks run against Claude:
+Layer 1 tells you the schema parses. Layer 2 tells you whether an agent can actually use it correctly, via four checks:
 
-1. **Clarity** — scores each tool's description 1–10 and states the specific problem (missing format, ambiguous scope, unclear return value) rather than a vague "could be clearer."
-2. **Confusion detection** — compares every pair of tools and flags pairs whose descriptions overlap enough that an agent has no reliable signal to pick between them, naming the exact overlapping words or parameters.
-3. **Scenario simulation** — generates realistic user requests (more scenarios for servers with more tools or more flagged confusion pairs) with a known-correct tool, then has Claude pick a tool for each request *independently*, blind to which tool was "expected." Scenarios are deliberately seeded to probe any pairs Check 2 flagged. Tool-picking runs at temperature 0 so results are stable across runs.
-4. **Suggested fixes** — for any tool scoring below 7/10, generates a drop-in replacement description, explicitly contrasting it against its confusion partner by name if one exists.
+1. **Clarity analysis** — scores each tool's description 1–10 and states the specific problem (missing format, ambiguous scope, unclear return value) rather than a vague "could be clearer."
+2. **Ambiguity analysis** — compares every pair of tools and flags pairs whose descriptions overlap enough that an agent has no reliable signal to pick between them, naming the exact overlapping words or parameters.
+3. **Compatibility testing** — generates realistic user requests (more scenarios for servers with more tools or more flagged ambiguous pairs) with a known-correct tool, then has an agent pick a tool for each request *independently*, blind to which tool was "expected." Scenarios are deliberately seeded to probe any pairs flagged by the ambiguity check. Tool-picking runs at a fixed, deterministic temperature so results are stable across runs.
+4. **Recommended fixes** — for any tool scoring below 7/10, generates a drop-in replacement description, explicitly contrasting it against its ambiguity partner by name if one exists.
 
-All four Claude responses are parsed and validated through Zod schemas before being trusted — a malformed or off-spec response fails loudly instead of corrupting the report.
+All four responses are parsed and validated through Zod schemas before being trusted — a malformed or off-spec response fails loudly instead of corrupting the report.
 
 ## Tech stack
 
@@ -155,7 +155,7 @@ All four Claude responses are parsed and validated through Zod schemas before be
 - TypeScript, run directly via [`tsx`](https://github.com/privatenumber/tsx) (not `ts-node` — the MCP SDK's extensionless export map needs esbuild's resolver)
 - [`@modelcontextprotocol/sdk`](https://github.com/modelcontextprotocol/typescript-sdk) for the MCP client / Streamable HTTP transport
 - [`commander`](https://github.com/tj/commander.js) for the CLI surface
-- [`zod`](https://github.com/colinhacks/zod) v4 for JSON Schema validation and for validating Claude's structured responses
+- [`zod`](https://github.com/colinhacks/zod) v4 for JSON Schema validation and for validating structured responses
 - [`@anthropic-ai/sdk`](https://github.com/anthropics/anthropic-sdk-typescript) for Layer 2, model `claude-haiku-4-5`
 
 **Web app** (`web/`)
@@ -170,7 +170,7 @@ All four Claude responses are parsed and validated through Zod schemas before be
 Issues and PRs welcome. A few things worth knowing before you dig in:
 
 - The root project (`src/checker.ts`) is the CLI; `web/` is a separate Next.js app that reimplements the same Layer 1/Layer 2 logic (`web/src/lib/layer1.ts`, `web/src/lib/layer2.ts`) behind API routes. If you change checker behavior, update both.
-- Layer 2 prompts are deliberately strict about output format (see the `*_RULES` constants in `checker.ts`) to keep Claude's verdicts specific instead of hedgy — if you touch those, sanity-check a few real runs, not just the schema.
+- Layer 2 prompts are deliberately strict about output format (see the `*_RULES` constants in `checker.ts`) to keep verdicts specific instead of hedgy — if you touch those, sanity-check a few real runs, not just the schema.
 - `npm run build` compiles the CLI with `tsc`; there's no build step required for local development (`npm run check` runs directly through `tsx`).
 
 Open a PR against `main`.
