@@ -28,7 +28,8 @@ export default function Home() {
           </div>
           <h1 className="text-3xl font-bold text-slate-100 mb-2">MCP Server Checker</h1>
           <p className="text-slate-400 text-sm leading-relaxed">
-            Paste your MCP server URL. Find out if an AI agent will actually use your tools correctly.
+            Validate your MCP server before you ship. Protocol conformance, tool clarity, and
+            agent compatibility — in one report.
           </p>
         </div>
 
@@ -52,7 +53,7 @@ export default function Home() {
               />
             </div>
 
-            {/* AI toggle */}
+            {/* Full validation toggle */}
             <label className="flex items-center gap-3 cursor-pointer group">
               <div className="relative flex-shrink-0">
                 <input
@@ -66,9 +67,9 @@ export default function Home() {
               </div>
               <div>
                 <span className="text-sm font-medium text-slate-300 group-hover:text-slate-100 transition-colors">
-                  Include AI reasoning checks
+                  Run full validation
                 </span>
-                <p className="text-xs text-slate-500 mt-0.5">Runs after schema validation</p>
+                <p className="text-xs text-slate-500 mt-0.5">Includes behavior and compatibility checks</p>
               </div>
             </label>
 
@@ -77,7 +78,7 @@ export default function Home() {
               className="w-full py-3 px-6 bg-blue-600 hover:bg-blue-500 active:bg-blue-700 text-white
                          font-semibold rounded-xl transition-colors"
             >
-              Run Free Check →
+              Validate Server →
             </button>
           </form>
 

@@ -95,7 +95,7 @@ function Layer1Section({ report }: { report: Layer1Report }) {
   return (
     <section>
       <SectionHeader
-        title="Layer 1 · Schema Validation"
+        title="Layer 1 · Protocol Validation"
         badge={
           <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${
             failed === 0
@@ -188,7 +188,7 @@ function SuggestedFixBox({ fix }: { fix: SuggestedFix }) {
   return (
     <div className="mt-2 bg-emerald-500/5 border border-emerald-500/20 rounded-lg p-3">
       <div className="flex items-center justify-between gap-2 mb-1.5">
-        <span className="text-xs font-semibold text-emerald-400 uppercase tracking-wide">Suggested fix</span>
+        <span className="text-xs font-semibold text-emerald-400 uppercase tracking-wide">Recommended fix</span>
         <button
           onClick={copy}
           className="text-xs px-2 py-0.5 rounded border border-emerald-500/30 text-emerald-300
@@ -272,12 +272,12 @@ function Layer2Section({ report }: { report: Layer2Report }) {
 
   return (
     <section className="space-y-6">
-      <SectionHeader title="Layer 2 · AI Reasoning Checks" />
+      <SectionHeader title="Layer 2 · Behavior Validation" />
 
       {/* Check 1: Clarity */}
       <div>
         <h3 className="text-xs font-bold text-slate-400 uppercase tracking-widest mb-3">
-          Check 1 · Description Clarity
+          Check 1 · Clarity Analysis
         </h3>
         <div className="bg-slate-900 border border-slate-800 rounded-xl px-4 divide-y divide-slate-800">
           {report.clarity.map(r => <ClarityRow key={r.name} result={r} fix={fixByName.get(r.name)} />)}
@@ -287,7 +287,7 @@ function Layer2Section({ report }: { report: Layer2Report }) {
       {/* Check 2: Confusion */}
       <div>
         <h3 className="text-xs font-bold text-slate-400 uppercase tracking-widest mb-3">
-          Check 2 · Tool Confusion Detection
+          Check 2 · Ambiguity Analysis
         </h3>
         {report.confusedPairs.length === 0 ? (
           <div className="bg-emerald-500/5 border border-emerald-500/20 rounded-xl p-4 text-emerald-400 text-sm">
@@ -303,7 +303,7 @@ function Layer2Section({ report }: { report: Layer2Report }) {
       {/* Check 3: Simulation */}
       <div>
         <h3 className="text-xs font-bold text-slate-400 uppercase tracking-widest mb-3 flex items-center gap-3">
-          Check 3 · Scenario Simulation
+          Check 3 · Compatibility Testing
           <span className={`normal-case text-sm font-bold ${
             simPassed === simTotal ? 'text-emerald-400' :
             simPassed >= Math.ceil(simTotal / 2) ? 'text-amber-400' :
@@ -313,7 +313,7 @@ function Layer2Section({ report }: { report: Layer2Report }) {
           </span>
         </h3>
         <p className="text-xs text-slate-600 mb-3 normal-case">
-          Tool selection tested at temperature 0 for consistent, reproducible results.
+          Agent simulation run at fixed temperature for reproducible results.
         </p>
         {showConfusionCaveat && (
           <p className="text-xs text-slate-500 leading-relaxed mb-3 normal-case">
@@ -449,7 +449,7 @@ function ResultsContent() {
         {/* Layer 2 */}
         {layer2Loading && (
           <div className="bg-slate-900 border border-slate-800 rounded-xl p-4">
-            <Spinner label="Running AI reasoning checks (Layer 2)… this may take up to 30 s" />
+            <Spinner label="Running behavior validation (Layer 2)… this may take up to 30 s" />
           </div>
         )}
         {layer2Error && (
