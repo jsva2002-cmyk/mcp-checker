@@ -81,56 +81,72 @@ Running against a real MCP server with 3 tools:
   Layer 2 — Behavior Validation  (claude-haiku-4-5)
 ══════════════════════════════════════════════════════════
 
+  2 issues found before shipping
+  1/3 tools ready to ship · 2 scenarios failed · 2 issues need fixing
+
   CHECK 1 · CLARITY ANALYSIS
 
   [1/3] read_wiki_structure
-       Clarity: 8/10  — Clear on what it lists, but doesn't say the topics
-       returned are usable as arguments to read_wiki_contents.
+       Clarity: 7/10  — Missing description of what the returned list
+       contains or how many topics are included by default.
 
   [2/3] read_wiki_contents
-       Clarity: 5/10  — Doesn't specify whether page identifiers come from
-       read_wiki_structure or the raw repo path — an agent may guess wrong.
-       Recommended fix: Retrieves the full markdown content of a specific
-       wiki page. Use this after read_wiki_structure to read a page's
-       content — not to list available topics.
+       Clarity: 5/10  — Fails to specify which documentation page is
+       returned or whether an agent must pass a topic name to retrieve
+       specific content.
+       Recommended fix: Retrieve the complete documentation content for a
+       GitHub repository. Use this to read full wiki contents after
+       identifying topics with read_wiki_structure — this returns actual
+       content, not a list of topics.
+       Triggered by Scenario 2 — agent picked read_wiki_structure instead
+       of this tool.
 
   [3/3] ask_question
-       Clarity: 9/10  — Clearly scoped to free-form Q&A, distinct from the
-       two structured retrieval tools.
+       Clarity: 8/10  — Clear dual-format input and max repository count
+       are well-defined; lacks detail on response format or length
+       constraints only.
 
   CHECK 2 · AMBIGUITY ANALYSIS
 
-  ⚠ read_wiki_structure ↔ read_wiki_contents
-    Both take only repoName and both mention "documentation" — an agent has
-    no signal to distinguish topic-listing from content-retrieval.
+  ⚠ read_wiki_structure ↔ read_wiki_contents  [HIGH — confirmed by simulation]
+    Both require only repoName and both access repository documentation —
+    an agent has no signal to distinguish topic-listing from content-retrieval.
+    Confirmed by Scenario 2 — agent picked read_wiki_structure instead.
 
   CHECK 3 · COMPATIBILITY TESTING
 
-  Scenario 1: "What topics does the facebook/react wiki cover?"
+  Scenario 1: "I need to see all the available documentation pages for the
+  tensorflow/tensorflow repo"
     Expected: read_wiki_structure  →  Picked: read_wiki_structure  ✓
-    Args:     {"repoName":"facebook/react"}
+    Args:     {"repoName":"tensorflow/tensorflow"}
 
-  Scenario 2: "Show me the contents of the 'Getting Started' page for vercel/next.js"
+  Scenario 2: "Show me the full documentation content for kubernetes/kubernetes.
+  I want to read the actual pages"
     Expected: read_wiki_contents  →  Picked: read_wiki_structure  ✗
-    Args:     {"repoName":"vercel/next.js"}
+    Args:     {"repoName":"kubernetes/kubernetes"}
 
-  Scenario 3: "How does React's reconciliation algorithm work?"
+  Scenario 3: "Can you help me understand the differences between React and Vue?"
     Expected: ask_question  →  Picked: ask_question  ✓
-    Args:     {"repoName":"facebook/react","question":"How does reconciliation work?"}
+    Args:     {"repoName":["facebook/react","vuejs/vue"],"question":"What are
+    the key differences?"}
 
-  Scenario 4: "List the documentation sections available for expressjs/express"
-    Expected: read_wiki_structure  →  Picked: read_wiki_structure  ✓
-    Args:     {"repoName":"expressjs/express"}
+  Scenario 4: "I'm looking at the docker/cli repository and I want to get an
+  overview of what's documented there"
+    Expected: read_wiki_structure  →  Picked: read_wiki_structure  ⚠ PASS (wrong args)
+    Args:     {"repoName":"example/repo"}
+    repoName is 'example/repo' — a placeholder never mentioned in the user's
+    request for 'docker/cli'.
 
-  Scenario 5: "Give me the full text of the API reference page for tailwindlabs/tailwindcss"
-    Expected: read_wiki_contents  →  Picked: read_wiki_contents  ✓
-    Args:     {"repoName":"tailwindlabs/tailwindcss","page":"API reference"}
+  Scenario 5: "Pull up the documentation for golang/go. I need to read through
+  their wiki"
+    Expected: read_wiki_contents  →  Picked: read_wiki_structure  ✗
+    Args:     {"repoName":"golang/go"}
 
-  Score: 4/5 passed
+  Score: 3/5 passed
 ══════════════════════════════════════════════════════════
 ```
 
-Scenario 2 is the failure the ambiguity check predicted: the agent had a specific page in mind but picked the topic-listing tool anyway, because nothing in either description said which tool to use once you already know the page you want.
+Scenarios 2 and 5 are the failures the ambiguity check predicted: the agent had a specific page in mind but picked the topic-listing tool anyway, because nothing in either description said which tool to use once you already know the page you want — that's what promotes the confusion pair to HIGH. Scenario 4 is a different failure mode: the right tool was picked, but the agent filled `repoName` with a placeholder instead of the repository actually named in the request — a passing tool selection with unusable arguments underneath it.
 
 ## How it works
 
@@ -140,14 +156,15 @@ Connects to the server over MCP's Streamable HTTP transport, calls `tools/list`,
 
 ### Layer 2 — Behavior validation (`--ai`)
 
-Layer 1 tells you the schema parses. Layer 2 tells you whether an agent can actually use it correctly, via four checks:
+Layer 1 tells you the schema parses. Layer 2 tells you whether an agent can actually use it correctly:
 
 1. **Clarity analysis** — scores each tool's description 1–10 and states the specific problem (missing format, ambiguous scope, unclear return value) rather than a vague "could be clearer."
-2. **Ambiguity analysis** — compares every pair of tools and flags pairs whose descriptions overlap enough that an agent has no reliable signal to pick between them, naming the exact overlapping words or parameters.
-3. **Compatibility testing** — generates realistic user requests (more scenarios for servers with more tools or more flagged ambiguous pairs) with a known-correct tool, then has an agent pick a tool for each request *independently*, blind to which tool was "expected." Scenarios are deliberately seeded to probe any pairs flagged by the ambiguity check. Tool-picking runs at a fixed, deterministic temperature so results are stable across runs.
-4. **Recommended fixes** — for any tool scoring below 7/10, generates a drop-in replacement description, explicitly contrasting it against its ambiguity partner by name if one exists.
+2. **Ambiguity analysis** — compares every pair of tools and flags pairs whose descriptions overlap enough that an agent has no reliable signal to pick between them, naming the exact overlapping words or parameters. Each flagged pair is then ranked **HIGH** if a compatibility-test scenario actually confirmed the mix-up, or **LOW** if it's only a structural resemblance nothing in simulation triggered — HIGH pairs sort first and cite the exact scenario and wrong pick that confirmed them.
+3. **Compatibility testing** — generates realistic user requests (more scenarios for servers with more tools or more flagged ambiguous pairs) with a known-correct tool, then has an agent pick a tool for each request *independently*, blind to which tool was "expected." Scenarios are deliberately seeded to probe any pairs flagged by the ambiguity check. Tool-picking runs at a fixed, deterministic temperature so results are stable across runs. When the right tool *is* picked, a follow-up check separately judges whether the arguments are actually usable — no placeholders, hallucinated values, missing required fields, or nonsensical types — surfaced as a distinct `⚠ PASS (wrong args)` state rather than folded into a hard pass/fail.
+4. **Recommended fixes** — generated for any tool scoring below 7/10, *and* for any tool that was the correct answer in a failed scenario but wasn't picked, even if its clarity score was fine on paper. Fixes explicitly contrast against an ambiguity partner by name if one exists, and cite the scenario that triggered them when relevant.
+5. **Overall verdict** — a one-line summary computed from the above (`N/M tools ready to ship · X scenarios failed · Y issues need fixing`, or `Server ready to ship` when nothing needs fixing) leads the Layer 2 report before any individual check is shown.
 
-All four responses are parsed and validated through Zod schemas before being trusted — a malformed or off-spec response fails loudly instead of corrupting the report.
+All Claude responses are parsed and validated through Zod schemas before being trusted — a malformed or off-spec response fails loudly instead of corrupting the report.
 
 ## Tech stack
 
