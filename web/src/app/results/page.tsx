@@ -3,7 +3,7 @@
 import { Suspense, useEffect, useState } from 'react';
 import { useSearchParams, useRouter } from 'next/navigation';
 import Link from 'next/link';
-import type { Layer1Report, Layer2Report, ClarityResult, ConfusionPair, SimulationResult, SuggestedFix, Severity } from '@/lib/types';
+import type { Layer1Report, Layer2Report, ClarityResult, ConfusionPair, SimulationResult, SuggestedFix, Severity, ToolSchemaResult } from '@/lib/types';
 
 // ─── Small shared atoms ───────────────────────────────────────────────────────
 
@@ -32,10 +32,6 @@ function ScoreBadge({ score }: { score: number }) {
       {n}/10
     </span>
   );
-}
-
-function Skeleton({ className }: { className?: string }) {
-  return <div className={`animate-pulse bg-line rounded ${className ?? ''}`} />;
 }
 
 function Spinner({ label }: { label: string }) {
@@ -232,12 +228,58 @@ function computeReportSummary(layer1: Layer1Report, layer2: Layer2Report | null)
 
 // ─── Layer 1 display ──────────────────────────────────────────────────────────
 
-function Layer1Section({ report }: { report: Layer1Report }) {
+// Collapsed: index + name + PASS/FAIL badge on one line. Expanded: title,
+// description, schema errors. Failed tools expand by default; passed tools
+// collapse so a clean report scans in seconds.
+function Layer1ToolRow({ tool, index, total, expanded, onToggle }: {
+  tool: ToolSchemaResult; index: number; total: number; expanded: boolean; onToggle: () => void;
+}) {
+  const severity = schemaSeverity(tool.schemaPassed);
+  const accent = SEVERITY_ACCENT[severity ?? 'ok'];
+
+  return (
+    <div className={`border-l-4 ${accent} bg-surface border-y border-r border-line rounded overflow-hidden`}>
+      <button
+        type="button"
+        onClick={onToggle}
+        className="w-full flex items-center gap-2.5 px-3 py-2 text-left hover:bg-line/20 transition-colors"
+      >
+        <span className="text-[10px] text-muted font-mono flex-shrink-0">[{index + 1}/{total}]</span>
+        <span className="font-mono text-sm text-fg flex-1 min-w-0 truncate text-left">{tool.name}</span>
+        <PassBadge passed={tool.schemaPassed} />
+        {severity && <SeverityBadge severity={severity} />}
+        <span className="text-muted text-[10px] flex-shrink-0 select-none font-mono">{expanded ? '−' : '+'}</span>
+      </button>
+
+      {expanded && (
+        <div className="px-3 pb-3 border-t border-line pt-2 space-y-1.5">
+          {tool.title && tool.title !== tool.name && (
+            <div className="text-xs text-muted">{tool.title}</div>
+          )}
+          {tool.description && (
+            <p className="text-xs text-muted leading-snug">{tool.description}</p>
+          )}
+          {tool.schemaErrors && tool.schemaErrors.length > 0 && (
+            <ul className="space-y-0.5">
+              {tool.schemaErrors.map((err, ei) => (
+                <li key={ei} className="text-xs text-critical font-mono">{err}</li>
+              ))}
+            </ul>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function Layer1Section({ report, expandedKeys, onToggle }: {
+  report: Layer1Report; expandedKeys: Set<string>; onToggle: (key: string) => void;
+}) {
   const passed = report.results.filter(r => r.schemaPassed).length;
   const failed = report.results.length - passed;
 
   return (
-    <section>
+    <section id="protocol-validation" className="scroll-mt-16">
       <SectionHeader
         title="Layer 1 · Protocol Validation"
         badge={
@@ -259,63 +301,18 @@ function Layer1Section({ report }: { report: Layer1Report }) {
 
       <div className="space-y-2">
         {report.results.map((tool, i) => {
-          const severity = schemaSeverity(tool.schemaPassed);
-          const accent = SEVERITY_ACCENT[severity ?? 'ok'];
+          const key = `l1:${tool.name}`;
           return (
-          <div key={tool.name}
-            className={`border-l-4 ${accent} bg-surface border-y border-r border-line rounded p-3`}>
-            <div className="flex items-start gap-3">
-              <div className="flex-1 min-w-0">
-                <div className="flex items-center gap-2 mb-1">
-                  <span className="text-[10px] text-muted font-mono">[{i + 1}/{report.results.length}]</span>
-                  <span className="font-semibold text-fg font-mono text-sm">{tool.name}</span>
-                  {tool.title && tool.title !== tool.name && (
-                    <span className="text-xs text-muted truncate">· {tool.title}</span>
-                  )}
-                </div>
-                {tool.description && (
-                  <p className="text-xs text-muted leading-snug line-clamp-2">{tool.description}</p>
-                )}
-                {tool.schemaErrors && tool.schemaErrors.length > 0 && (
-                  <ul className="mt-1.5 space-y-0.5">
-                    {tool.schemaErrors.map((err, ei) => (
-                      <li key={ei} className="text-xs text-critical font-mono">{err}</li>
-                    ))}
-                  </ul>
-                )}
-              </div>
-              <div className="flex flex-col items-end gap-1">
-                <PassBadge passed={tool.schemaPassed} />
-                {severity && <SeverityBadge severity={severity} />}
-              </div>
-            </div>
-          </div>
+            <Layer1ToolRow
+              key={tool.name}
+              tool={tool}
+              index={i}
+              total={report.results.length}
+              expanded={expandedKeys.has(key)}
+              onToggle={() => onToggle(key)}
+            />
           );
         })}
-      </div>
-    </section>
-  );
-}
-
-function Layer1Skeleton() {
-  return (
-    <section>
-      <div className="flex items-center gap-2.5 mb-3">
-        <Skeleton className="h-3 w-40" />
-        <div className="flex-1 h-px bg-line" />
-      </div>
-      <div className="space-y-2">
-        {[1, 2, 3].map(i => (
-          <div key={i} className="bg-surface border border-line rounded p-3">
-            <div className="flex items-center justify-between">
-              <div className="space-y-2">
-                <Skeleton className="h-4 w-36" />
-                <Skeleton className="h-3 w-60" />
-              </div>
-              <Skeleton className="h-5 w-16 rounded" />
-            </div>
-          </div>
-        ))}
       </div>
     </section>
   );
@@ -396,17 +393,19 @@ function SuggestedFixBox({ fix, clarity }: { fix: SuggestedFix; clarity?: Clarit
 // Collapsible tool card: Tool name → Score + status → (expanded) Problem → Why
 // this matters → Recommended fix → Copy → Triggered scenario. Passed tools
 // collapse by default so a clean report scans in seconds; anything flagged
-// opens automatically so it can't be missed.
-function ToolCard({ result, fix }: { result: ClarityResult; fix?: SuggestedFix }) {
+// opens automatically so it can't be missed. Expand state is controlled by the
+// parent so "Expand All" / "Collapse All" can drive every card at once.
+function ToolCard({ result, fix, expanded, onToggle }: {
+  result: ClarityResult; fix?: SuggestedFix; expanded: boolean; onToggle: () => void;
+}) {
   const severity = claritySeverity(result.score);
-  const [expanded, setExpanded] = useState(severity === 'warning');
   const accent = SEVERITY_ACCENT[severity ?? 'ok'];
 
   return (
     <div className={`border-l-4 ${accent} bg-surface border-y border-r border-line rounded overflow-hidden`}>
       <button
         type="button"
-        onClick={() => setExpanded(v => !v)}
+        onClick={onToggle}
         className="w-full flex items-center gap-2.5 px-3 py-2 text-left hover:bg-line/20 transition-colors"
       >
         <ScoreBadge score={result.score} />
@@ -570,6 +569,32 @@ function ProductionStatusBadge({ status }: { status: ReportSummary['productionSt
   );
 }
 
+// Anchor links to each report section — rendered as the second row of the
+// sticky bar so it stays reachable while scrolling through a long report.
+function SectionNav({ layer2Ran }: { layer2Ran: boolean }) {
+  const links: Array<{ href: string; label: string }> = [
+    { href: '#executive-summary', label: 'Executive Summary' },
+    { href: '#protocol-validation', label: 'Protocol Validation' },
+    ...(layer2Ran ? [
+      { href: '#behavior-validation', label: 'Behavior Validation' },
+      { href: '#compatibility-testing', label: 'Compatibility Testing' },
+    ] : []),
+    { href: '#final-verdict', label: 'Final Verdict' },
+  ];
+  return (
+    <div className="border-t border-line">
+      <div className="max-w-2xl mx-auto px-4 py-1 flex items-center gap-x-3 text-[10px] text-muted overflow-x-auto whitespace-nowrap">
+        {links.map((l, i) => (
+          <span key={l.href} className="flex items-center gap-x-3">
+            {i > 0 && <span className="text-line">·</span>}
+            <a href={l.href} className="hover:text-suggestion transition-colors">{l.label}</a>
+          </span>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 // Compact bar pinned to the top of the viewport once the page scrolls past the
 // header — a VS Code status-bar: solid surface, tight padding, small text.
 function StickySummaryBar({ summary }: { summary: ReportSummary }) {
@@ -590,6 +615,7 @@ function StickySummaryBar({ summary }: { summary: ReportSummary }) {
         <span className="text-warning whitespace-nowrap">🟡 {summary.warningCount}</span>
         <span className="text-suggestion whitespace-nowrap">🔵 {summary.suggestionCount}</span>
       </div>
+      <SectionNav layer2Ran={summary.layer2Ran} />
     </div>
   );
 }
@@ -610,7 +636,7 @@ function HealthScoreBadge({ score }: { score: number }) {
 function StatRow({ label, value, tone = 'neutral' }: { label: string; value: string; tone?: 'good' | 'bad' | 'neutral' }) {
   const cls = tone === 'good' ? 'text-success' : tone === 'bad' ? 'text-critical' : 'text-fg';
   return (
-    <div className="flex items-center justify-between py-1.5">
+    <div className="flex items-center justify-between py-1">
       <span className="text-xs text-muted">{label}</span>
       <span className={`text-xs font-mono font-semibold ${cls}`}>{value}</span>
     </div>
@@ -632,8 +658,8 @@ function ProgressBar({ fraction, tone }: { fraction: number; tone: 'good' | 'bad
 function StatBarRow({ label, value, fraction, tone }: { label: string; value: string; fraction: number; tone: 'good' | 'bad' | 'neutral' }) {
   const cls = tone === 'good' ? 'text-success' : tone === 'bad' ? 'text-critical' : 'text-fg';
   return (
-    <div className="py-1.5">
-      <div className="flex items-center justify-between mb-1">
+    <div className="py-1">
+      <div className="flex items-center justify-between mb-0.5">
         <span className="text-xs text-muted">{label}</span>
         <span className={`text-xs font-mono font-semibold ${cls}`}>{value}</span>
       </div>
@@ -655,16 +681,16 @@ function ExecutiveSummary({ summary }: { summary: ReportSummary }) {
     : summary.behaviorLabel;
 
   return (
-    <section className="bg-surface border border-line rounded p-4">
-      <div className="flex items-start gap-3 mb-4">
+    <section id="executive-summary" className="scroll-mt-16 bg-surface border border-line rounded p-3">
+      <div className="flex items-start gap-2.5 mb-3">
         <HealthScoreBadge score={summary.healthScore} />
-        <div className="flex-1 min-w-0 pt-0.5">
-          <h2 className="text-[11px] font-semibold text-muted uppercase tracking-wider mb-2">Executive Summary</h2>
+        <div className="flex-1 min-w-0">
+          <h2 className="text-[11px] font-semibold text-muted uppercase tracking-wider mb-1.5">Executive Summary</h2>
           <ProductionStatusBadge status={summary.productionStatus} />
         </div>
       </div>
 
-      <div className="grid grid-cols-2 gap-x-6">
+      <div className="grid grid-cols-2 gap-x-4">
         <div>
           <StatBarRow
             label="Protocol Validation"
@@ -693,7 +719,7 @@ function ExecutiveSummary({ summary }: { summary: ReportSummary }) {
       </div>
 
       {summary.highlights.length > 0 && (
-        <div className="mt-3 pt-3 border-t border-line space-y-1">
+        <div className="mt-2 pt-2 border-t border-line space-y-1">
           {summary.highlights.map(h => (
             <div key={h} className="text-xs text-success flex items-center gap-1.5">
               <span>✓</span><span>{h}</span>
@@ -709,6 +735,15 @@ function ExecutiveSummary({ summary }: { summary: ReportSummary }) {
 // did — built from the same counts shown above it, not a separate judgment call.
 function verdictExplanation(summary: ReportSummary): string[] {
   const lines: string[] = [];
+
+  // Nothing at all was flagged — not even a suggestion — and the full check
+  // suite actually ran. Say so plainly instead of a report that just trails
+  // off into checkmarks with no closing statement.
+  const isPerfect = summary.layer2Ran &&
+    summary.criticalCount === 0 && summary.warningCount === 0 && summary.suggestionCount === 0;
+  if (isPerfect) {
+    return ['✓ Excellent MCP implementation — No issues detected. Ready for production.'];
+  }
 
   if (summary.productionStatus === 'ready') {
     lines.push(
@@ -765,7 +800,7 @@ function ProductionVerdict({ summary }: { summary: ReportSummary }) {
   const lines = verdictExplanation(summary);
 
   return (
-    <section className={`bg-surface border border-line border-l-4 ${accentCls} rounded p-4`}>
+    <section id="final-verdict" className={`scroll-mt-16 bg-surface border border-line border-l-4 ${accentCls} rounded p-4`}>
       <div className="flex items-center gap-2 text-sm font-bold mb-3">
         <span>{s.emoji}</span><span className="text-fg">{s.label}</span>
       </div>
@@ -776,14 +811,16 @@ function ProductionVerdict({ summary }: { summary: ReportSummary }) {
   );
 }
 
-function Layer2Section({ report, summary }: { report: Layer2Report; summary: ReportSummary }) {
+function Layer2Section({ report, summary, expandedKeys, onToggle }: {
+  report: Layer2Report; summary: ReportSummary; expandedKeys: Set<string>; onToggle: (key: string) => void;
+}) {
   const simTotal = report.simulation.length;
   const simPassed = report.simulationScore;
   const fixByName = new Map(report.suggestedFixes.map(f => [f.name, f]));
   const showConfusionCaveat = report.confusedPairs.length > 0 && simTotal > 0 && simPassed === simTotal;
 
   return (
-    <section className="space-y-6">
+    <section id="behavior-validation" className="scroll-mt-16 space-y-6">
       <VerdictBanner summary={summary} />
 
       <SectionHeader title="Layer 2 · Behavior Validation" />
@@ -794,7 +831,18 @@ function Layer2Section({ report, summary }: { report: Layer2Report; summary: Rep
           Check 1 · Clarity Analysis
         </h3>
         <div className="space-y-2">
-          {report.clarity.map(r => <ToolCard key={r.name} result={r} fix={fixByName.get(r.name)} />)}
+          {report.clarity.map(r => {
+            const key = `l2:${r.name}`;
+            return (
+              <ToolCard
+                key={r.name}
+                result={r}
+                fix={fixByName.get(r.name)}
+                expanded={expandedKeys.has(key)}
+                onToggle={() => onToggle(key)}
+              />
+            );
+          })}
         </div>
       </div>
 
@@ -815,7 +863,7 @@ function Layer2Section({ report, summary }: { report: Layer2Report; summary: Rep
       </div>
 
       {/* Check 3: Simulation */}
-      <div>
+      <div id="compatibility-testing" className="scroll-mt-16">
         <h3 className="text-[11px] font-semibold text-muted uppercase tracking-wider mb-2 flex items-center gap-3">
           Check 3 · Compatibility Testing
           <span className={`normal-case text-xs font-mono font-bold ${
@@ -860,6 +908,68 @@ function ResultsContent() {
   const [layer2, setLayer2]             = useState<Layer2Report | null>(null);
   const [layer2Loading, setLayer2Loading] = useState(false);
   const [layer2Error, setLayer2Error]   = useState<string | null>(null);
+
+  // Which tool cards are expanded, keyed "l1:<name>" / "l2:<name>" so Layer 1
+  // and Layer 2 rows for the same tool name don't collide. Centralized here
+  // (rather than local state per card) so Expand All / Collapse All can drive
+  // every card at once.
+  const [expandedKeys, setExpandedKeys] = useState<Set<string>>(new Set());
+  const toggleKey = (key: string) => {
+    setExpandedKeys(prev => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key); else next.add(key);
+      return next;
+    });
+  };
+
+  // Seed default-expanded cards (failed schemas, warning-level clarity) the
+  // moment each dataset arrives, without clobbering any manual toggles made since.
+  useEffect(() => {
+    if (!layer1) return;
+    setExpandedKeys(prev => {
+      const next = new Set(prev);
+      layer1.results.forEach(r => { if (!r.schemaPassed) next.add(`l1:${r.name}`); });
+      return next;
+    });
+  }, [layer1]);
+
+  useEffect(() => {
+    if (!layer2) return;
+    setExpandedKeys(prev => {
+      const next = new Set(prev);
+      layer2.clarity.forEach(c => { if (claritySeverity(c.score) === 'warning') next.add(`l2:${c.name}`); });
+      return next;
+    });
+  }, [layer2]);
+
+  const allCardKeys = (): string[] => {
+    const keys: string[] = [];
+    if (layer1) layer1.results.forEach(r => keys.push(`l1:${r.name}`));
+    if (layer2) layer2.clarity.forEach(c => keys.push(`l2:${c.name}`));
+    return keys;
+  };
+  const expandAll = () => setExpandedKeys(new Set(allCardKeys()));
+  const collapseAll = () => setExpandedKeys(new Set());
+
+  // Sequential loading messages. The real network calls are just two fetches
+  // (Layer 1, then Layer 2), so each phase's second message is a timed
+  // progression rather than a distinct backend event — the interval is
+  // cleared the moment the fetch actually resolves either way.
+  const [layer1Tick, setLayer1Tick] = useState(0);
+  useEffect(() => {
+    setLayer1Tick(0);
+    if (!layer1Loading) return;
+    const id = setInterval(() => setLayer1Tick(t => Math.min(t + 1, 1)), 900);
+    return () => clearInterval(id);
+  }, [layer1Loading]);
+
+  const [layer2Tick, setLayer2Tick] = useState(0);
+  useEffect(() => {
+    setLayer2Tick(0);
+    if (!layer2Loading) return;
+    const id = setInterval(() => setLayer2Tick(t => Math.min(t + 1, 1)), 1200);
+    return () => clearInterval(id);
+  }, [layer2Loading]);
 
   useEffect(() => {
     if (!url) { router.push('/'); return; }
@@ -925,8 +1035,25 @@ function ResultsContent() {
   // Wait for Layer 2 (success or failure) before computing the summary when AI
   // checks were requested, so "Behavior Validation: Not run" doesn't flash
   // briefly while the request is still in flight.
-  const summaryReady = layer1 !== null && !layer1Loading && (!runAi || layer2 !== null || layer2Error !== null);
-  const summary = summaryReady && layer1 ? computeReportSummary(layer1, layer2) : null;
+  const dataReady = layer1 !== null && !layer1Loading && (!runAi || layer2 !== null || layer2Error !== null);
+
+  // Brief "Generating report..." beat between the last fetch resolving and the
+  // report appearing — the fifth loading step, not a real async gap.
+  const [finalizing, setFinalizing] = useState(false);
+  useEffect(() => {
+    if (!dataReady) return;
+    setFinalizing(true);
+    const t = setTimeout(() => setFinalizing(false), 350);
+    return () => clearTimeout(t);
+  }, [dataReady]);
+
+  const summary = dataReady && !finalizing && layer1 ? computeReportSummary(layer1, layer2) : null;
+
+  const currentStepLabel: string | null =
+    layer1Loading ? (layer1Tick === 0 ? 'Connecting to MCP server...' : 'Validating protocol...') :
+    layer2Loading ? (layer2Tick === 0 ? 'Running behavior analysis...' : 'Running compatibility simulations...') :
+    (dataReady && finalizing) ? 'Generating report...' :
+    null;
 
   return (
     <div className="min-h-screen bg-canvas">
@@ -947,41 +1074,72 @@ function ResultsContent() {
       <main className="max-w-2xl mx-auto px-4 py-8 space-y-8">
         {/* Executive summary dashboard — leads the whole report */}
         {summary && <ExecutiveSummary summary={summary} />}
+        {!summary && dataReady && finalizing && (
+          <div className="bg-surface border border-line rounded p-3">
+            <Spinner label={currentStepLabel ?? 'Generating report...'} />
+          </div>
+        )}
 
         {/* Server info + Layer 1 are grouped tightly — the info line is Layer 1's intro, not its own section */}
         <div className="space-y-3">
           {layer1 && !layer1Loading && (
-            <div className="flex items-center gap-2 text-xs">
-              <span className="w-1.5 h-1.5 bg-success rounded-full flex-shrink-0" />
-              {layer1.serverName ? (
-                <span className="text-fg/80">
-                  <span className="font-semibold text-fg">{layer1.serverName}</span>
-                  {layer1.serverVersion && <span className="text-muted"> v{layer1.serverVersion}</span>}
-                  <span className="text-muted"> · {layer1.toolCount} tool{layer1.toolCount !== 1 ? 's' : ''}</span>
-                </span>
-              ) : (
-                <span className="text-muted">{layer1.toolCount} tool{layer1.toolCount !== 1 ? 's' : ''} found</span>
-              )}
+            <div className="flex items-center justify-between gap-2 text-xs">
+              <div className="flex items-center gap-2 min-w-0">
+                <span className="w-1.5 h-1.5 bg-success rounded-full flex-shrink-0" />
+                {layer1.serverName ? (
+                  <span className="text-fg/80 truncate">
+                    <span className="font-semibold text-fg">{layer1.serverName}</span>
+                    {layer1.serverVersion && <span className="text-muted"> v{layer1.serverVersion}</span>}
+                    <span className="text-muted"> · {layer1.toolCount} tool{layer1.toolCount !== 1 ? 's' : ''}</span>
+                  </span>
+                ) : (
+                  <span className="text-muted">{layer1.toolCount} tool{layer1.toolCount !== 1 ? 's' : ''} found</span>
+                )}
+              </div>
+              <div className="flex items-center gap-1.5 flex-shrink-0">
+                <button
+                  onClick={expandAll}
+                  className="text-[10px] px-1.5 py-0.5 rounded border border-line text-muted
+                             hover:text-fg hover:border-suggestion/50 transition-colors font-mono"
+                >
+                  expand all
+                </button>
+                <button
+                  onClick={collapseAll}
+                  className="text-[10px] px-1.5 py-0.5 rounded border border-line text-muted
+                             hover:text-fg hover:border-suggestion/50 transition-colors font-mono"
+                >
+                  collapse all
+                </button>
+              </div>
             </div>
           )}
 
-          {layer1Loading && <Layer1Skeleton />}
+          {layer1Loading && (
+            <div className="bg-surface border border-line rounded p-3">
+              <Spinner label={currentStepLabel ?? 'Connecting to MCP server...'} />
+            </div>
+          )}
           {layer1Error && !layer1 && !layer1Loading && (
             <ErrorBox message={layer1Error} defaultHeader="Connection failed" />
           )}
-          {layer1 && !layer1Loading && <Layer1Section report={layer1} />}
+          {layer1 && !layer1Loading && (
+            <Layer1Section report={layer1} expandedKeys={expandedKeys} onToggle={toggleKey} />
+          )}
         </div>
 
         {/* Layer 2 */}
         {layer2Loading && (
           <div className="bg-surface border border-line rounded p-3">
-            <Spinner label="Running behavior validation (Layer 2)… this may take up to 30 s" />
+            <Spinner label={currentStepLabel ?? 'Running behavior analysis...'} />
           </div>
         )}
         {layer2Error && (
           <ErrorBox message={layer2Error} defaultHeader="Layer 2 failed" />
         )}
-        {layer2 && summary && <Layer2Section report={layer2} summary={summary} />}
+        {layer2 && summary && (
+          <Layer2Section report={layer2} summary={summary} expandedKeys={expandedKeys} onToggle={toggleKey} />
+        )}
 
         {/* Production verdict — closes out the report */}
         {summary && <ProductionVerdict summary={summary} />}
