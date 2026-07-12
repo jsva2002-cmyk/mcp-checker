@@ -71,8 +71,7 @@ function HomeContent() {
               onClick={() => setShowAdvanced(v => !v)}
               className="text-[11px] text-muted hover:text-fg transition-colors flex items-center gap-1"
             >
-              <span className="text-[9px] font-mono">{showAdvanced ? '▾' : '▸'}</span>
-              Advanced
+              🔒 Private server? Add auth token {showAdvanced ? '▴' : '▾'}
             </button>
 
             {showAdvanced && (
