@@ -104,6 +104,15 @@ function SeverityBadge({ severity }: { severity: Severity }) {
   );
 }
 
+// Left-edge accent so severity reads instantly without parsing text — red demands
+// attention first, amber second, blue is informational, green confirms it's fine.
+const SEVERITY_ACCENT: Record<Severity | 'ok', string> = {
+  critical:   'border-l-red-500',
+  warning:    'border-l-amber-500',
+  suggestion: 'border-l-blue-500',
+  ok:         'border-l-emerald-500',
+};
+
 // Wrong tool picked, or a protocol schema that doesn't validate — an agent
 // calling this in production gets a wrong result or a hard error.
 function schemaSeverity(passed: boolean): Severity | null {
@@ -144,6 +153,8 @@ interface ReportSummary {
   clarityAverage: number | null;
   healthScore: number;
   criticalCount: number;
+  schemaFailureCount: number;   // subset of criticalCount: Layer 1 schemas that failed
+  scenarioFailureCount: number; // subset of criticalCount: scenarios where the wrong tool was picked
   warningCount: number;
   suggestionCount: number;
   improvementOpportunities: number;
@@ -179,9 +190,9 @@ function computeReportSummary(layer1: Layer1Report, layer2: Layer2Report | null)
     ? Math.round(protocolRate * 30 + compatibilityRate * 40 + clarityRate * 30)
     : Math.round(protocolRate * 100);
 
-  const schemaFailures = protocolTotal - protocolPassed;
-  const scenarioFailures = layer2 ? layer2.simulation.filter(s => !s.correct).length : 0;
-  const criticalCount = schemaFailures + scenarioFailures;
+  const schemaFailureCount = protocolTotal - protocolPassed;
+  const scenarioFailureCount = layer2 ? layer2.simulation.filter(s => !s.correct).length : 0;
+  const criticalCount = schemaFailureCount + scenarioFailureCount;
 
   const lowClarityCount = layer2 ? layer2.clarity.filter(c => Math.round(c.score) < 7).length : 0;
   const highConfusionCount = layer2 ? layer2.confusedPairs.filter(p => p.severity === 'HIGH').length : 0;
@@ -199,6 +210,7 @@ function computeReportSummary(layer1: Layer1Report, layer2: Layer2Report | null)
     warningCount > 0 ? 'minor' : 'ready';
 
   const schemaViolationCount = layer2 ? layer2.simulation.filter(s => s.argIssueType === 'schema').length : 0;
+  const anyArgWarningCount = layer2 ? layer2.simulation.filter(s => s.argWarning).length : 0;
 
   const highlights: string[] = [];
   if (protocolTotal > 0 && protocolPassed === protocolTotal) {
@@ -207,14 +219,14 @@ function computeReportSummary(layer1: Layer1Report, layer2: Layer2Report | null)
   if (layer2Ran && compatibilityTotal > 0 && schemaViolationCount === 0) {
     highlights.push('No schema violations detected');
   }
-  if (layer2Ran && compatibilityTotal > 0 && compatibilityRate >= 0.8) {
-    highlights.push('High compatibility score');
+  if (layer2Ran && compatibilityTotal > 0 && anyArgWarningCount === 0) {
+    highlights.push('Strong parameter definitions');
   }
 
   return {
     protocolPassed, protocolTotal, behaviorLabel, compatibilityPassed, compatibilityTotal,
-    clarityAverage, healthScore, criticalCount, warningCount, suggestionCount,
-    improvementOpportunities, productionStatus, highlights, layer2Ran,
+    clarityAverage, healthScore, criticalCount, schemaFailureCount, scenarioFailureCount,
+    warningCount, suggestionCount, improvementOpportunities, productionStatus, highlights, layer2Ran,
   };
 }
 
@@ -245,12 +257,13 @@ function Layer1Section({ report }: { report: Layer1Report }) {
         </div>
       )}
 
-      <div className="space-y-2">
+      <div className="space-y-3">
         {report.results.map((tool, i) => {
           const severity = schemaSeverity(tool.schemaPassed);
+          const accent = SEVERITY_ACCENT[severity ?? 'ok'];
           return (
           <div key={tool.name}
-            className="bg-slate-900 border border-slate-800 rounded-xl p-4 hover:border-slate-700 transition-colors">
+            className={`border-l-4 ${accent} bg-slate-900 border-y border-r border-slate-800 rounded-r-xl p-4 hover:border-slate-700 transition-colors`}>
             <div className="flex items-start gap-3">
               <div className="flex-1 min-w-0">
                 <div className="flex items-center gap-2 mb-1">
@@ -313,29 +326,23 @@ function Layer1Skeleton() {
 // Problem text: use Claude's own clarity verdict when the fix was triggered by a
 // clarity issue. When it was triggered purely by a scenario failure on an
 // otherwise clear-reading description, there's no "problem" verdict to reuse —
-// state the actual, observed failure instead.
+// state the actual, observed failure instead. One sentence — scan, don't read.
 function problemText(fix: SuggestedFix, clarity?: ClarityResult): string {
   if (fix.reasons.includes('clarity') && clarity) return clarity.verdict;
   if (fix.scenarioContext) {
-    return `The description reads fine on its own, but an agent still routed a matching request to ${fix.scenarioContext.pickedTool} instead of this tool.`;
+    return `Agent picked ${fix.scenarioContext.pickedTool} instead of this tool for a matching request.`;
   }
   return clarity?.verdict ?? 'Description needs clarification for reliable tool selection.';
 }
 
 // "Why this matters" is synthesized client-side from data already in the report —
 // no extra model call — because it's just restating what the other checks found
-// in terms of production consequence.
+// in terms of production consequence. One sentence.
 function whyThisMattersText(fix: SuggestedFix): string {
-  const hasClarity = fix.reasons.includes('clarity');
-  const hasScenario = fix.reasons.includes('scenario');
-
-  if (hasScenario && hasClarity) {
-    return `This tool is both hard to distinguish from a similar one and was actually missed by an agent during testing. In production, requests like "${fix.scenarioContext?.request}" will silently route to the wrong tool and return the wrong result.`;
+  if (fix.reasons.includes('scenario')) {
+    return 'In production, similar requests will silently route to the wrong tool.';
   }
-  if (hasScenario) {
-    return `In production, a request like "${fix.scenarioContext?.request}" will route to ${fix.scenarioContext?.pickedTool} instead of this tool — the agent won't error, it will just silently do the wrong thing.`;
-  }
-  return `An ambiguous description like this increases the chance an agent picks the wrong tool or passes malformed arguments, even without a confirmed failure yet in this run.`;
+  return 'Ambiguous descriptions raise the risk of wrong tool selection or malformed arguments.';
 }
 
 function SuggestedFixBox({ fix, clarity }: { fix: SuggestedFix; clarity?: ClarityResult }) {
@@ -352,19 +359,19 @@ function SuggestedFixBox({ fix, clarity }: { fix: SuggestedFix; clarity?: Clarit
   };
 
   return (
-    <div className="mt-2 bg-emerald-500/5 border border-emerald-500/20 rounded-lg p-3 space-y-2.5">
+    <div className="mt-3 bg-emerald-500/5 border border-emerald-500/20 rounded-lg p-4 space-y-3">
       <div>
         <span className="text-[10px] font-semibold text-slate-500 uppercase tracking-wide">Problem</span>
-        <p className="text-xs text-slate-300 leading-relaxed mt-0.5">{problemText(fix, clarity)}</p>
+        <p className="text-xs text-slate-300 leading-relaxed mt-1">{problemText(fix, clarity)}</p>
       </div>
 
       <div>
         <span className="text-[10px] font-semibold text-slate-500 uppercase tracking-wide">Why this matters</span>
-        <p className="text-xs text-slate-400 leading-relaxed mt-0.5">{whyThisMattersText(fix)}</p>
+        <p className="text-xs text-slate-400 leading-relaxed mt-1">{whyThisMattersText(fix)}</p>
       </div>
 
       <div>
-        <div className="flex items-center justify-between gap-2 mb-0.5">
+        <div className="flex items-center justify-between gap-2 mb-1">
           <span className="text-[10px] font-semibold text-emerald-400 uppercase tracking-wide">Recommended fix</span>
           <button
             onClick={copy}
@@ -376,7 +383,7 @@ function SuggestedFixBox({ fix, clarity }: { fix: SuggestedFix; clarity?: Clarit
         </div>
         <p className="text-xs text-emerald-200/90 leading-relaxed">{fix.suggestedDescription}</p>
         {fix.scenarioContext && (
-          <p className="text-xs text-emerald-400/70 leading-relaxed mt-1.5">
+          <p className="text-xs text-emerald-400/70 leading-relaxed mt-2">
             Triggered by Scenario {fix.scenarioContext.scenarioIndex} — agent picked{' '}
             {fix.scenarioContext.pickedTool} instead of this tool.
           </p>
@@ -386,21 +393,47 @@ function SuggestedFixBox({ fix, clarity }: { fix: SuggestedFix; clarity?: Clarit
   );
 }
 
-function ClarityRow({ result, fix }: { result: ClarityResult; fix?: SuggestedFix }) {
-  const severity = claritySeverity(result.score);
+function PassedBadge() {
   return (
-    <div className="py-3 border-b border-slate-800 last:border-0">
-      <div className="flex items-start gap-3">
+    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold
+                     border uppercase tracking-wide whitespace-nowrap bg-emerald-500/10 text-emerald-400 border-emerald-500/30">
+      ✓ Passed
+    </span>
+  );
+}
+
+// Collapsible tool card: Tool name → Score + status → (expanded) Problem → Why
+// this matters → Recommended fix → Copy → Triggered scenario. Passed tools
+// collapse by default so a clean report scans in seconds; anything flagged
+// opens automatically so it can't be missed.
+function ToolCard({ result, fix }: { result: ClarityResult; fix?: SuggestedFix }) {
+  const severity = claritySeverity(result.score);
+  const [expanded, setExpanded] = useState(severity === 'warning');
+  const accent = SEVERITY_ACCENT[severity ?? 'ok'];
+
+  return (
+    <div className={`border-l-4 ${accent} bg-slate-900 border-y border-r border-slate-800 rounded-r-xl overflow-hidden`}>
+      <button
+        type="button"
+        onClick={() => setExpanded(v => !v)}
+        className="w-full flex items-start gap-3 p-4 text-left hover:bg-slate-800/30 transition-colors"
+      >
         <ScoreBadge score={result.score} />
         <div className="flex-1 min-w-0">
-          <div className="flex items-center gap-2 mb-0.5">
-            <div className="font-mono text-sm text-slate-200">{result.name}</div>
-            {severity && <SeverityBadge severity={severity} />}
+          <div className="flex items-center gap-2 mb-1 flex-wrap">
+            <span className="font-mono text-sm font-semibold text-slate-200">{result.name}</span>
+            {severity ? <SeverityBadge severity={severity} /> : <PassedBadge />}
           </div>
-          <div className="text-xs text-slate-400 leading-relaxed">{result.verdict}</div>
+          <p className={`text-xs text-slate-400 leading-relaxed ${expanded ? '' : 'truncate'}`}>{result.verdict}</p>
         </div>
-      </div>
-      {fix && <SuggestedFixBox fix={fix} clarity={result} />}
+        <span className="text-slate-600 text-xs mt-1.5 flex-shrink-0 select-none">{expanded ? '▲' : '▼'}</span>
+      </button>
+
+      {expanded && fix && (
+        <div className="px-4 pb-4">
+          <SuggestedFixBox fix={fix} clarity={result} />
+        </div>
+      )}
     </div>
   );
 }
@@ -408,17 +441,18 @@ function ClarityRow({ result, fix }: { result: ClarityResult; fix?: SuggestedFix
 function ConfusionRow({ pair }: { pair: ConfusionPair }) {
   const isHigh = pair.severity === 'HIGH';
   const severity = confusionSeverity(pair);
+  const accent = SEVERITY_ACCENT[severity];
   return (
-    <div className={`rounded-xl p-3 border ${
-      isHigh ? 'bg-red-500/5 border-red-500/20' : 'bg-amber-500/5 border-amber-500/20'
+    <div className={`border-l-4 ${accent} border-y border-r border-slate-800 rounded-r-xl p-4 ${
+      isHigh ? 'bg-amber-500/5' : 'bg-blue-500/5'
     }`}>
-      <div className="flex items-center gap-2 mb-1.5 text-sm font-mono flex-wrap">
-        <span className={`font-semibold ${isHigh ? 'text-red-300' : 'text-amber-300'}`}>{pair.tool1}</span>
+      <div className="flex items-center gap-2 mb-2 text-sm font-mono flex-wrap">
+        <span className={`font-semibold ${isHigh ? 'text-amber-300' : 'text-blue-300'}`}>{pair.tool1}</span>
         <span className="text-slate-500">↔</span>
-        <span className={`font-semibold ${isHigh ? 'text-red-300' : 'text-amber-300'}`}>{pair.tool2}</span>
+        <span className={`font-semibold ${isHigh ? 'text-amber-300' : 'text-blue-300'}`}>{pair.tool2}</span>
         <SeverityBadge severity={severity} />
         {isHigh && (
-          <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-red-500/20 text-red-300
+          <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-amber-500/20 text-amber-300
                            font-sans font-semibold uppercase tracking-wide whitespace-nowrap">
             Confirmed by simulation
           </span>
@@ -426,7 +460,7 @@ function ConfusionRow({ pair }: { pair: ConfusionPair }) {
       </div>
       <p className="text-xs text-slate-400 leading-relaxed">{pair.reason}</p>
       {isHigh && pair.confirmedByScenario && (
-        <p className="text-xs text-red-300/80 leading-relaxed mt-1">
+        <p className="text-xs text-amber-300/80 leading-relaxed mt-1.5">
           Confirmed by Scenario {pair.confirmedByScenario} — agent picked {pair.confirmedByPickedTool} instead.
         </p>
       )}
@@ -452,8 +486,9 @@ function SimStatusBadge({ sim }: { sim: SimulationResult }) {
 
 function SimulationRow({ sim, index }: { sim: SimulationResult; index: number }) {
   const severity = simulationSeverity(sim);
+  const accent = SEVERITY_ACCENT[severity ?? 'ok'];
   return (
-    <div className="bg-slate-900 border border-slate-800 rounded-xl p-4">
+    <div className={`border-l-4 ${accent} bg-slate-900 border-y border-r border-slate-800 rounded-r-xl p-4`}>
       <div className="flex items-start justify-between gap-3 mb-2">
         <div className="flex items-center gap-2">
           <div className="text-xs text-slate-500 font-mono">Scenario {index + 1}</div>
@@ -545,6 +580,30 @@ function ProductionStatusBadge({ status }: { status: ReportSummary['productionSt
   );
 }
 
+// Compact bar pinned to the top of the viewport once the page scrolls past the
+// header, so health/severity context stays visible through a long report.
+function StickySummaryBar({ summary }: { summary: ReportSummary }) {
+  const s = PRODUCTION_STATUS_STYLE[summary.productionStatus];
+  return (
+    <div className="sticky top-0 z-20 bg-slate-950/95 backdrop-blur border-b border-slate-800">
+      <div className="max-w-2xl mx-auto px-4 py-2.5 flex items-center gap-4 text-xs overflow-x-auto">
+        <span className="font-bold text-slate-200 whitespace-nowrap">
+          {summary.healthScore}<span className="text-slate-500 font-normal">/100</span>
+        </span>
+        <span className={`inline-flex items-center gap-1 font-semibold whitespace-nowrap ${
+          summary.productionStatus === 'ready' ? 'text-emerald-300' :
+          summary.productionStatus === 'minor' ? 'text-amber-300' : 'text-red-300'
+        }`}>
+          {s.emoji} {s.label}
+        </span>
+        <span className="text-red-400 whitespace-nowrap">🔴 {summary.criticalCount}</span>
+        <span className="text-amber-400 whitespace-nowrap">🟡 {summary.warningCount}</span>
+        <span className="text-blue-400 whitespace-nowrap">🔵 {summary.suggestionCount}</span>
+      </div>
+    </div>
+  );
+}
+
 function HealthScoreBadge({ score }: { score: number }) {
   const cls =
     score >= 80 ? 'text-emerald-400 border-emerald-500/30 bg-emerald-500/10' :
@@ -561,9 +620,34 @@ function HealthScoreBadge({ score }: { score: number }) {
 function StatRow({ label, value, tone = 'neutral' }: { label: string; value: string; tone?: 'good' | 'bad' | 'neutral' }) {
   const cls = tone === 'good' ? 'text-emerald-400' : tone === 'bad' ? 'text-red-400' : 'text-slate-200';
   return (
-    <div className="flex items-center justify-between py-1.5">
+    <div className="flex items-center justify-between py-2">
       <span className="text-xs text-slate-500">{label}</span>
       <span className={`text-xs font-semibold ${cls}`}>{value}</span>
+    </div>
+  );
+}
+
+// "██████████░░ 8/12 Passed"-style bar — a filled track sized to the pass rate,
+// so protocol/behavior/compatibility health reads at a glance, not just as a fraction.
+function ProgressBar({ fraction, tone }: { fraction: number; tone: 'good' | 'bad' | 'neutral' }) {
+  const pct = Math.max(0, Math.min(100, Math.round(fraction * 100)));
+  const barCls = tone === 'good' ? 'bg-emerald-400' : tone === 'bad' ? 'bg-red-400' : 'bg-amber-400';
+  return (
+    <div className="h-1.5 rounded-full bg-slate-800 overflow-hidden">
+      <div className={`h-full rounded-full ${barCls}`} style={{ width: `${pct}%` }} />
+    </div>
+  );
+}
+
+function StatBarRow({ label, value, fraction, tone }: { label: string; value: string; fraction: number; tone: 'good' | 'bad' | 'neutral' }) {
+  const cls = tone === 'good' ? 'text-emerald-400' : tone === 'bad' ? 'text-red-400' : 'text-slate-200';
+  return (
+    <div className="py-2">
+      <div className="flex items-center justify-between mb-1.5">
+        <span className="text-xs text-slate-500">{label}</span>
+        <span className={`text-xs font-semibold ${cls}`}>{value}</span>
+      </div>
+      <ProgressBar fraction={fraction} tone={tone} />
     </div>
   );
 }
@@ -573,27 +657,41 @@ function ExecutiveSummary({ summary }: { summary: ReportSummary }) {
   const behaviorTone = summary.behaviorLabel === 'Strong' ? 'good' : summary.behaviorLabel === 'Weak' ? 'bad' : 'neutral';
   const compatibilityOk = summary.layer2Ran && summary.compatibilityTotal > 0 && summary.compatibilityPassed === summary.compatibilityTotal;
 
+  const protocolFraction = summary.protocolTotal > 0 ? summary.protocolPassed / summary.protocolTotal : 1;
+  const compatibilityFraction = summary.compatibilityTotal > 0 ? summary.compatibilityPassed / summary.compatibilityTotal : 0;
+  const behaviorFraction = summary.clarityAverage !== null ? summary.clarityAverage / 10 : 0;
+  const behaviorValue = summary.clarityAverage !== null
+    ? `${summary.behaviorLabel} (${summary.clarityAverage.toFixed(1)}/10)`
+    : summary.behaviorLabel;
+
   return (
-    <section className="bg-slate-900 border border-slate-800 rounded-2xl p-5">
-      <div className="flex items-start gap-4 mb-4">
+    <section className="bg-slate-900 border border-slate-800 rounded-2xl p-6">
+      <div className="flex items-start gap-4 mb-6">
         <HealthScoreBadge score={summary.healthScore} />
         <div className="flex-1 min-w-0 pt-1">
-          <h2 className="text-sm font-bold text-slate-200 uppercase tracking-wide mb-2">Executive Summary</h2>
+          <h2 className="text-sm font-bold text-slate-200 uppercase tracking-wide mb-2.5">Executive Summary</h2>
           <ProductionStatusBadge status={summary.productionStatus} />
         </div>
       </div>
 
-      <div className="grid grid-cols-2 gap-x-6">
+      <div className="grid grid-cols-2 gap-x-8">
         <div>
-          <StatRow
+          <StatBarRow
             label="Protocol Validation"
             value={`${summary.protocolPassed}/${summary.protocolTotal} Passed`}
+            fraction={protocolFraction}
             tone={protocolOk ? 'good' : 'bad'}
           />
-          <StatRow label="Behavior Validation" value={summary.behaviorLabel} tone={behaviorTone} />
-          <StatRow
+          <StatBarRow
+            label="Behavior Validation"
+            value={behaviorValue}
+            fraction={summary.layer2Ran ? behaviorFraction : 0}
+            tone={summary.layer2Ran ? behaviorTone : 'neutral'}
+          />
+          <StatBarRow
             label="Compatibility Testing"
             value={summary.layer2Ran ? `${summary.compatibilityPassed}/${summary.compatibilityTotal} Passed` : 'Not run'}
+            fraction={summary.layer2Ran ? compatibilityFraction : 0}
             tone={summary.layer2Ran ? (compatibilityOk ? 'good' : 'neutral') : 'neutral'}
           />
         </div>
@@ -605,7 +703,7 @@ function ExecutiveSummary({ summary }: { summary: ReportSummary }) {
       </div>
 
       {summary.highlights.length > 0 && (
-        <div className="mt-4 pt-4 border-t border-slate-800 space-y-1">
+        <div className="mt-5 pt-5 border-t border-slate-800 space-y-1.5">
           {summary.highlights.map(h => (
             <div key={h} className="text-xs text-emerald-400 flex items-center gap-1.5">
               <span>✓</span><span>{h}</span>
@@ -647,9 +745,16 @@ function verdictExplanation(summary: ReportSummary): string[] {
     return lines;
   }
 
+  const criticalParts: string[] = [];
+  if (summary.schemaFailureCount > 0) {
+    criticalParts.push(`${summary.schemaFailureCount} failed protocol schema${summary.schemaFailureCount === 1 ? '' : 's'}`);
+  }
+  if (summary.scenarioFailureCount > 0) {
+    criticalParts.push(`${summary.scenarioFailureCount} scenario${summary.scenarioFailureCount === 1 ? '' : 's'} where the agent picked the wrong tool`);
+  }
   lines.push(
-    `${summary.criticalCount} critical issue${summary.criticalCount === 1 ? '' : 's'} — failed protocol schemas and/or scenarios ` +
-    `where the agent picked the wrong tool — mean this server will misroute real requests.`,
+    `${summary.criticalCount} critical issue${summary.criticalCount === 1 ? '' : 's'} — ${criticalParts.join(' and ')} — ` +
+    `mean this server will misroute real requests.`,
   );
   lines.push(
     `${summary.protocolPassed}/${summary.protocolTotal} protocol checks passed and ${summary.compatibilityPassed}/${summary.compatibilityTotal} ` +
@@ -667,11 +772,11 @@ function ProductionVerdict({ summary }: { summary: ReportSummary }) {
   const lines = verdictExplanation(summary);
 
   return (
-    <section className={`rounded-2xl border p-5 ${s.cls}`}>
-      <div className="flex items-center gap-2 text-base font-bold mb-3">
+    <section className={`rounded-2xl border p-6 ${s.cls}`}>
+      <div className="flex items-center gap-2 text-base font-bold mb-4">
         <span>{s.emoji}</span><span>{s.label}</span>
       </div>
-      <div className="space-y-1.5 text-sm text-slate-300 leading-relaxed">
+      <div className="space-y-2 text-sm text-slate-300 leading-relaxed">
         {lines.map((line, i) => <p key={i}>{line}</p>)}
       </div>
     </section>
@@ -685,24 +790,24 @@ function Layer2Section({ report, summary }: { report: Layer2Report; summary: Rep
   const showConfusionCaveat = report.confusedPairs.length > 0 && simTotal > 0 && simPassed === simTotal;
 
   return (
-    <section className="space-y-6">
+    <section className="space-y-10">
       <VerdictBanner summary={summary} />
 
       <SectionHeader title="Layer 2 · Behavior Validation" />
 
       {/* Check 1: Clarity */}
       <div>
-        <h3 className="text-xs font-bold text-slate-400 uppercase tracking-widest mb-3">
+        <h3 className="text-xs font-bold text-slate-400 uppercase tracking-widest mb-4">
           Check 1 · Clarity Analysis
         </h3>
-        <div className="bg-slate-900 border border-slate-800 rounded-xl px-4 divide-y divide-slate-800">
-          {report.clarity.map(r => <ClarityRow key={r.name} result={r} fix={fixByName.get(r.name)} />)}
+        <div className="space-y-3">
+          {report.clarity.map(r => <ToolCard key={r.name} result={r} fix={fixByName.get(r.name)} />)}
         </div>
       </div>
 
       {/* Check 2: Confusion */}
       <div>
-        <h3 className="text-xs font-bold text-slate-400 uppercase tracking-widest mb-3">
+        <h3 className="text-xs font-bold text-slate-400 uppercase tracking-widest mb-4">
           Check 2 · Ambiguity Analysis
         </h3>
         {report.confusedPairs.length === 0 ? (
@@ -710,7 +815,7 @@ function Layer2Section({ report, summary }: { report: Layer2Report; summary: Rep
             ✓ No confused tool pairs detected.
           </div>
         ) : (
-          <div className="space-y-2">
+          <div className="space-y-3">
             {report.confusedPairs.map((pair, i) => <ConfusionRow key={i} pair={pair} />)}
           </div>
         )}
@@ -718,7 +823,7 @@ function Layer2Section({ report, summary }: { report: Layer2Report; summary: Rep
 
       {/* Check 3: Simulation */}
       <div>
-        <h3 className="text-xs font-bold text-slate-400 uppercase tracking-widest mb-3 flex items-center gap-3">
+        <h3 className="text-xs font-bold text-slate-400 uppercase tracking-widest mb-4 flex items-center gap-3">
           Check 3 · Compatibility Testing
           <span className={`normal-case text-sm font-bold ${
             simPassed === simTotal ? 'text-emerald-400' :
@@ -728,11 +833,11 @@ function Layer2Section({ report, summary }: { report: Layer2Report; summary: Rep
             {simPassed}/{simTotal} passed
           </span>
         </h3>
-        <p className="text-xs text-slate-600 mb-3 normal-case">
+        <p className="text-xs text-slate-600 mb-4 normal-case">
           Agent simulation run at fixed temperature for reproducible results.
         </p>
         {showConfusionCaveat && (
-          <p className="text-xs text-slate-500 leading-relaxed mb-3 normal-case">
+          <p className="text-xs text-slate-500 leading-relaxed mb-4 normal-case">
             {simPassed}/{simTotal} passed on this run — confusion risk flagged above may surface on
             different user phrasings. Scenario simulation is one sample; confusion detection identifies
             structural risk regardless of this run&rsquo;s outcome.
@@ -844,32 +949,35 @@ function ResultsContent() {
         </div>
       </header>
 
-      <main className="max-w-2xl mx-auto px-4 py-8 space-y-8">
+      {summary && <StickySummaryBar summary={summary} />}
+
+      <main className="max-w-2xl mx-auto px-4 py-10 space-y-12">
         {/* Executive summary dashboard — leads the whole report */}
         {summary && <ExecutiveSummary summary={summary} />}
 
-        {/* Server info (once loaded) */}
-        {layer1 && !layer1Loading && (
-          <div className="flex items-center gap-3 text-sm">
-            <span className="w-2 h-2 bg-emerald-400 rounded-full flex-shrink-0" />
-            {layer1.serverName ? (
-              <span className="text-slate-300">
-                <span className="font-semibold">{layer1.serverName}</span>
-                {layer1.serverVersion && <span className="text-slate-500"> v{layer1.serverVersion}</span>}
-                <span className="text-slate-500"> · {layer1.toolCount} tool{layer1.toolCount !== 1 ? 's' : ''}</span>
-              </span>
-            ) : (
-              <span className="text-slate-400">{layer1.toolCount} tool{layer1.toolCount !== 1 ? 's' : ''} found</span>
-            )}
-          </div>
-        )}
+        {/* Server info + Layer 1 are grouped tightly — the info line is Layer 1's intro, not its own section */}
+        <div className="space-y-4">
+          {layer1 && !layer1Loading && (
+            <div className="flex items-center gap-3 text-sm">
+              <span className="w-2 h-2 bg-emerald-400 rounded-full flex-shrink-0" />
+              {layer1.serverName ? (
+                <span className="text-slate-300">
+                  <span className="font-semibold">{layer1.serverName}</span>
+                  {layer1.serverVersion && <span className="text-slate-500"> v{layer1.serverVersion}</span>}
+                  <span className="text-slate-500"> · {layer1.toolCount} tool{layer1.toolCount !== 1 ? 's' : ''}</span>
+                </span>
+              ) : (
+                <span className="text-slate-400">{layer1.toolCount} tool{layer1.toolCount !== 1 ? 's' : ''} found</span>
+              )}
+            </div>
+          )}
 
-        {/* Layer 1 */}
-        {layer1Loading && <Layer1Skeleton />}
-        {layer1Error && !layer1 && !layer1Loading && (
-          <ErrorBox message={layer1Error} defaultHeader="Connection failed" />
-        )}
-        {layer1 && !layer1Loading && <Layer1Section report={layer1} />}
+          {layer1Loading && <Layer1Skeleton />}
+          {layer1Error && !layer1 && !layer1Loading && (
+            <ErrorBox message={layer1Error} defaultHeader="Connection failed" />
+          )}
+          {layer1 && !layer1Loading && <Layer1Section report={layer1} />}
+        </div>
 
         {/* Layer 2 */}
         {layer2Loading && (

@@ -177,23 +177,48 @@ function validateArgsAgainstSchema(
   const result = jsonSchemaToZod(inputSchema).safeParse(args);
   if (result.success) return { valid: true, issues: [] };
 
-  const issues = result.error.issues.map(issue => {
+  const missing: string[] = [];
+  const wrongType: Array<{ path: string; expected: string }> = [];
+  const unrecognized: string[] = [];
+
+  for (const issue of result.error.issues) {
     const path = issue.path.length ? issue.path.map(String).join('.') : '(root)';
-
     if (issue.code === 'unrecognized_keys') {
-      const keys = issue.keys.map(k => `'${k}'`).join(', ');
-      return `Unexpected field${issue.keys.length > 1 ? 's' : ''} ${keys} — not defined in the tool's schema.`;
+      unrecognized.push(...issue.keys);
+    } else if (issue.code === 'invalid_type') {
+      if (issue.message.includes('received undefined')) missing.push(path);
+      else wrongType.push({ path, expected: issue.expected });
     }
-    if (issue.code === 'invalid_type') {
-      if (issue.message.includes('received undefined')) {
-        return `Missing required field '${path}' — the schema requires it but no value was provided.`;
-      }
-      return `Field '${path}' has the wrong type — expected ${issue.expected}.`;
-    }
-    return `'${path}': ${issue.message}`;
-  });
+  }
 
-  return { valid: false, issues };
+  const messages: string[] = [];
+
+  // A required field missing alongside an unrecognized key in the same call is
+  // almost always the same mistake — the agent used the wrong field name.
+  // Surface both halves together instead of reporting only "missing field" and
+  // silently dropping which (wrong) name the agent actually used.
+  const renamedPairCount = Math.min(missing.length, unrecognized.length);
+  for (let i = 0; i < renamedPairCount; i++) {
+    messages.push(
+      `Used '${unrecognized[i]}' instead of the required field '${missing[i]}' — ` +
+      `'${unrecognized[i]}' isn't a recognized field for this tool.`,
+    );
+  }
+  const leftoverMissing = missing.slice(renamedPairCount);
+  const leftoverUnrecognized = unrecognized.slice(renamedPairCount);
+
+  if (leftoverUnrecognized.length > 0) {
+    const keys = leftoverUnrecognized.map(k => `'${k}'`).join(', ');
+    messages.push(`Unrecognized field${leftoverUnrecognized.length > 1 ? 's' : ''} ${keys} — not in schema.`);
+  }
+  for (const path of leftoverMissing) {
+    messages.push(`Missing required field '${path}' — the schema requires it but no value was provided.`);
+  }
+  for (const { path, expected } of wrongType) {
+    messages.push(`Field '${path}' has the wrong type — expected ${expected}.`);
+  }
+
+  return { valid: false, issues: messages };
 }
 
 // ─── Check 1: Clarity Analysis ───────────────────────────────────────────────
