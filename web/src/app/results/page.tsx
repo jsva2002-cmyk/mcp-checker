@@ -597,10 +597,12 @@ function SectionNav({ layer2Ran }: { layer2Ran: boolean }) {
 
 // Compact bar pinned to the top of the viewport once the page scrolls past the
 // header — a VS Code status-bar: solid surface, tight padding, small text.
-function StickySummaryBar({ summary, url, onExport }: {
-  summary: ReportSummary; url: string; onExport: (format: ExportFormat) => void;
+function StickySummaryBar({ summary, url, authHeader, onExport }: {
+  summary: ReportSummary; url: string; authHeader: string; onExport: (format: ExportFormat) => void;
 }) {
   const s = PRODUCTION_STATUS_STYLE[summary.productionStatus];
+  const reanalyzeParams = new URLSearchParams({ url });
+  if (authHeader) reanalyzeParams.set('auth', authHeader);
   return (
     <div className="sticky top-0 z-20 bg-surface border-b border-line print-hide">
       <div className="max-w-2xl mx-auto px-4 py-1.5 flex items-center justify-between gap-3">
@@ -619,7 +621,7 @@ function StickySummaryBar({ summary, url, onExport }: {
           <span className="text-suggestion whitespace-nowrap">🔵 {summary.suggestionCount}</span>
         </div>
         <div className="flex items-center gap-2 flex-shrink-0">
-          <Link href={`/?url=${encodeURIComponent(url)}`}
+          <Link href={`/?${reanalyzeParams.toString()}`}
             className="text-[11px] px-2 py-1 rounded border border-line text-muted
                        hover:text-fg hover:border-suggestion/50 transition-colors flex items-center gap-1 whitespace-nowrap">
             ← Re-analyze
@@ -1133,6 +1135,7 @@ function ResultsContent() {
 
   const url  = params.get('url') ?? '';
   const runAi = params.get('ai') === 'true';
+  const authHeader = params.get('auth') ?? '';
 
   const [layer1, setLayer1]             = useState<Layer1Report | null>(null);
   const [layer1Loading, setLayer1Loading] = useState(true);
@@ -1224,7 +1227,7 @@ function ResultsContent() {
     fetch('/api/check', {
       method:  'POST',
       headers: { 'Content-Type': 'application/json' },
-      body:    JSON.stringify({ url }),
+      body:    JSON.stringify(authHeader ? { url, authHeader } : { url }),
       signal:  controller.signal,
     })
       .then(async r => {
@@ -1322,7 +1325,7 @@ function ResultsContent() {
         </div>
       </header>
 
-      {summary && <StickySummaryBar summary={summary} url={url} onExport={handleExport} />}
+      {summary && <StickySummaryBar summary={summary} url={url} authHeader={authHeader} onExport={handleExport} />}
 
       <main className="max-w-2xl mx-auto px-4 py-8 space-y-8">
         {summary && <PrintHeader serverName={layer1?.serverName ?? hostname} />}

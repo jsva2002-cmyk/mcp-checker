@@ -66,8 +66,10 @@ function validateSchema(schema: unknown): { passed: boolean; errors?: string[] }
 
 // ─── MCP connection ───────────────────────────────────────────────────────────
 
-export async function runLayer1(url: string): Promise<Layer1Report> {
-  const transport = new StreamableHTTPClientTransport(new URL(url));
+export async function runLayer1(url: string, authHeader?: string): Promise<Layer1Report> {
+  const transport = new StreamableHTTPClientTransport(new URL(url), authHeader
+    ? { requestInit: { headers: { Authorization: authHeader } } }
+    : undefined);
   const mcpClient = new Client(
     { name: 'mcp-checker-web', version: '1.0.0' },
     { capabilities: {} },
