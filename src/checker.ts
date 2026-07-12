@@ -129,8 +129,9 @@ interface SimulationResult {
   pickedTool:   string;
   pickedArgs:   Record<string, unknown>;
   correct:      boolean;
-  argWarning?:  boolean; // right tool picked, but arguments look wrong
-  argIssue?:    string;  // one-line reason when argWarning is true
+  argWarning?:    boolean;              // right tool picked, but arguments look wrong
+  argIssue?:      string;               // one-line reason when argWarning is true
+  argIssueType?:  'schema' | 'value';   // schema = programmatic Zod validation; value = LLM heuristic
 }
 
 interface ScenarioFailureContext {
@@ -260,13 +261,16 @@ BAD: "These tools seem similar and could confuse an agent."
 BAD: "Both tools have overlapping functionality."
 GOOD: "Both take only repoName and both mention 'documentation' — an agent has no signal to distinguish topic-listing from content-retrieval."`;
 
+// Field presence, naming, and type are validated programmatically (see
+// validateArgsAgainstSchema) — this prompt only judges whether the *values* an
+// agent chose are actually grounded in the request, not whether they're structurally valid.
 const ARG_QUALITY_RULES = `Issue rules (only when valid is false):
 - Maximum 20 words, one sentence.
-- Name the exact problem: which field, and whether it's a placeholder, a hallucinated value, a missing required field, or the wrong type/format.
+- Only flag the VALUE: a placeholder, an example value, or something hallucinated with no basis in the request. Do not comment on missing fields or types — those are checked separately.
 - Never use these phrases: "seems off", "might be wrong", "could be improved", "doesn't look right".
 
 GOOD: "repoName is 'example/repo' — a placeholder never mentioned in the user's request."
-GOOD: "Missing required field 'branch' — the schema requires it but no value was provided."`;
+GOOD: "question restates the tool description instead of the specific thing the user asked about."`;
 
 const SUGGESTED_FIX_RULES = `Rules:
 - Write a drop-in replacement description in active voice.
@@ -310,6 +314,81 @@ async function callClaude(
   });
   const block = res.content.find(b => b.type === 'text');
   return block?.type === 'text' ? block.text : '';
+}
+
+// ─── Layer 2: Programmatic argument-schema validation ────────────────────────
+// Converts a tool's JSON Schema inputSchema into a Zod schema so that missing
+// required fields, unrecognized field names, and wrong types are caught
+// deterministically — no LLM judgment involved. Constructs we don't model
+// precisely ($ref, anyOf/oneOf/allOf) fall back to z.unknown() rather than
+// risk a false positive on a schema shape we can't faithfully represent.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function jsonSchemaToZod(schema: any): z.ZodTypeAny {
+  if (!schema || typeof schema !== 'object') return z.unknown();
+  if (schema.$ref || schema.anyOf || schema.oneOf || schema.allOf) return z.unknown();
+
+  if (Array.isArray(schema.enum) && schema.enum.length > 0) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const literals = schema.enum.map((v: unknown) => z.literal(v as any));
+    return literals.length === 1 ? literals[0] : z.union(literals);
+  }
+
+  const type = Array.isArray(schema.type) ? schema.type[0] : schema.type;
+
+  switch (type) {
+    case 'string':  return z.string();
+    case 'number':  return z.number();
+    case 'integer': return z.number().int();
+    case 'boolean': return z.boolean();
+    case 'null':    return z.null();
+    case 'array': {
+      const itemSchema = schema.items
+        ? jsonSchemaToZod(Array.isArray(schema.items) ? schema.items[0] : schema.items)
+        : z.unknown();
+      return z.array(itemSchema);
+    }
+    case 'object': {
+      const properties = schema.properties ?? {};
+      const required: string[] = Array.isArray(schema.required) ? schema.required : [];
+      const shape: Record<string, z.ZodTypeAny> = {};
+      for (const [key, propSchema] of Object.entries(properties)) {
+        const zodProp = jsonSchemaToZod(propSchema);
+        shape[key] = required.includes(key) ? zodProp : zodProp.optional();
+      }
+      const obj = z.object(shape);
+      // Extra keys an agent invents (e.g. the wrong field name) are always worth
+      // flagging, even if the source schema permits additionalProperties.
+      return schema.additionalProperties === true ? obj.passthrough() : obj.strict();
+    }
+    default:
+      return z.unknown();
+  }
+}
+
+function validateArgsAgainstSchema(
+  inputSchema: unknown,
+  args: Record<string, unknown>,
+): { valid: boolean; issues: string[] } {
+  const result = jsonSchemaToZod(inputSchema).safeParse(args);
+  if (result.success) return { valid: true, issues: [] };
+
+  const issues = result.error.issues.map(issue => {
+    const path = issue.path.length ? issue.path.map(String).join('.') : '(root)';
+
+    if (issue.code === 'unrecognized_keys') {
+      const keys = issue.keys.map(k => `'${k}'`).join(', ');
+      return `Unexpected field${issue.keys.length > 1 ? 's' : ''} ${keys} — not defined in the tool's schema.`;
+    }
+    if (issue.code === 'invalid_type') {
+      if (issue.message.includes('received undefined')) {
+        return `Missing required field '${path}' — the schema requires it but no value was provided.`;
+      }
+      return `Field '${path}' has the wrong type — expected ${issue.expected}.`;
+    }
+    return `'${path}': ${issue.message}`;
+  });
+
+  return { valid: false, issues };
 }
 
 // ─── Layer 2: Check 1 — Description Clarity ──────────────────────────────────
@@ -399,15 +478,24 @@ function scenarioCount(toolCount: number, confusionPairCount: number): number {
   return 5;
 }
 
+// Schema structure (missing/unknown fields, wrong types) is checked first and
+// programmatically — deterministic, no API call. Only when the arguments are
+// structurally valid do we spend an LLM call judging whether the *values*
+// actually reflect the user's request rather than being placeholders or hallucinated.
 async function checkArgQuality(
   tool: McpTool,
   request: string,
   args: Record<string, unknown>,
   anthropic: Anthropic,
-): Promise<{ valid: boolean; issue?: string }> {
+): Promise<{ valid: boolean; issue?: string; issueType?: 'schema' | 'value' }> {
+  const schemaResult = validateArgsAgainstSchema(tool.inputSchema, args);
+  if (!schemaResult.valid) {
+    return { valid: false, issue: schemaResult.issues[0], issueType: 'schema' };
+  }
+
   const text = await callClaude(
     anthropic,
-    'You evaluate whether tool-call arguments are usable, not whether the correct tool was chosen. Respond only with valid JSON.',
+    'You evaluate whether tool-call argument VALUES are grounded in the user\'s request, not whether the correct tool was chosen or whether the arguments are structurally valid. Respond only with valid JSON.',
     `Tool:
 Name: ${tool.name}
 Description: ${tool.description ?? '(no description)'}
@@ -415,10 +503,10 @@ Input schema: ${JSON.stringify(tool.inputSchema, null, 2)}
 
 User request: "${request}"
 
-Arguments an agent proposed for this call:
+Arguments an agent proposed for this call (already confirmed structurally valid):
 ${JSON.stringify(args, null, 2)}
 
-Decide whether these arguments are valid: no placeholder text (e.g. "string", "TODO", "example", "<value>"), no hallucinated values that aren't grounded in the request, all required fields present, and no nonsensical values for their type or format.
+Decide whether these argument VALUES are grounded in the request: no placeholder text (e.g. "string", "TODO", "example", "<value>") and no values hallucinated with no basis in what the user asked for.
 
 ${ARG_QUALITY_RULES}
 
@@ -426,7 +514,11 @@ Respond with JSON: {"valid":true} or {"valid":false,"issue":"<one-sentence reaso
     256,
     0,
   );
-  return ArgQualityResponseSchema.parse(extractJSON(text));
+  const quality = ArgQualityResponseSchema.parse(extractJSON(text));
+  if (!quality.valid) {
+    return { valid: false, issue: quality.issue, issueType: 'value' };
+  }
+  return { valid: true };
 }
 
 async function check3Simulation(
@@ -500,7 +592,7 @@ Respond with a JSON array of exactly ${count} items:
     try {
       const quality = await checkArgQuality(tool, r.request, r.pickedArgs, anthropic);
       if (!quality.valid) {
-        return { ...r, argWarning: true, argIssue: quality.issue };
+        return { ...r, argWarning: true, argIssue: quality.issue, argIssueType: quality.issueType };
       }
     } catch { /* argument-quality check is best-effort; leave the pass as-is */ }
     return r;
@@ -793,7 +885,7 @@ async function runLayer2Checks(tools: McpTool[], anthropic: Anthropic): Promise<
       const badge = !s.correct
         ? `${RED}✗${RESET}`
         : s.argWarning
-          ? `${YELLOW}⚠ PASS (wrong args)${RESET}`
+          ? `${YELLOW}⚠ PASS (${s.argIssueType === 'schema' ? 'schema violation' : 'wrong args'})${RESET}`
           : `${GREEN}✓${RESET}`;
       const argsStr = Object.keys(s.pickedArgs).length > 0
         ? JSON.stringify(s.pickedArgs)
@@ -803,7 +895,8 @@ async function runLayer2Checks(tools: McpTool[], anthropic: Anthropic): Promise<
       console.log(`    Expected: ${BOLD}${s.expectedTool}${RESET}  →  Picked: ${BOLD}${s.pickedTool}${RESET}  ${badge}`);
       console.log(`    Args:     ${DIM}${truncate(argsStr, 80)}${RESET}`);
       if (s.argWarning && s.argIssue) {
-        console.log(`    ${YELLOW}${s.argIssue}${RESET}`);
+        const label = s.argIssueType === 'schema' ? 'Schema violation (programmatic)' : 'Value quality warning (heuristic)';
+        console.log(`    ${YELLOW}${label}: ${s.argIssue}${RESET}`);
       }
       console.log();
     }

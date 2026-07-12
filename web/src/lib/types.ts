@@ -43,8 +43,9 @@ export interface SimulationResult {
   pickedTool: string;
   pickedArgs: Record<string, unknown>;
   correct: boolean;
-  argWarning?: boolean; // right tool picked, but arguments look wrong
-  argIssue?: string;    // one-line reason when argWarning is true
+  argWarning?: boolean;                   // right tool picked, but arguments look wrong
+  argIssue?: string;                      // one-line reason when argWarning is true
+  argIssueType?: 'schema' | 'value';      // schema = programmatic Zod validation; value = LLM heuristic
 }
 
 export interface ScenarioFailureContext {

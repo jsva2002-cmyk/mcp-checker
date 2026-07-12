@@ -255,10 +255,11 @@ function SimStatusBadge({ sim }: { sim: SimulationResult }) {
     return <span className="text-red-400 text-base leading-none">✗</span>;
   }
   if (sim.argWarning) {
+    const label = sim.argIssueType === 'schema' ? 'PASS (schema violation)' : 'PASS (wrong args)';
     return (
       <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-semibold
                        bg-amber-500/10 text-amber-400 border border-amber-500/30 whitespace-nowrap">
-        ⚠ PASS (wrong args)
+        ⚠ {label}
       </span>
     );
   }
@@ -294,7 +295,12 @@ function SimulationRow({ sim, index }: { sim: SimulationResult; index: number })
         </div>
       )}
       {sim.argWarning && sim.argIssue && (
-        <p className="text-xs text-amber-300/90 leading-relaxed mt-2">{sim.argIssue}</p>
+        <p className="text-xs text-amber-300/90 leading-relaxed mt-2">
+          <span className="font-semibold uppercase tracking-wide text-[10px] text-amber-400/80 mr-1">
+            {sim.argIssueType === 'schema' ? 'Schema violation (programmatic):' : 'Value quality warning (heuristic):'}
+          </span>
+          {sim.argIssue}
+        </p>
       )}
     </div>
   );
