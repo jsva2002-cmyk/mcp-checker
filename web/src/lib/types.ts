@@ -78,3 +78,7 @@ export interface Layer2Report {
   suggestedFixes: SuggestedFix[];
   verdict: Layer2Verdict;
 }
+
+// Every flagged finding (failed schema, low clarity, confirmed confusion, wrong
+// args, wrong tool) is tagged with one of these so the report reads consistently.
+export type Severity = 'critical' | 'warning' | 'suggestion';

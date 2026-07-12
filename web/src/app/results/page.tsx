@@ -3,7 +3,7 @@
 import { Suspense, useEffect, useState } from 'react';
 import { useSearchParams, useRouter } from 'next/navigation';
 import Link from 'next/link';
-import type { Layer1Report, Layer2Report, Layer2Verdict, ClarityResult, ConfusionPair, SimulationResult, SuggestedFix } from '@/lib/types';
+import type { Layer1Report, Layer2Report, ClarityResult, ConfusionPair, SimulationResult, SuggestedFix, Severity } from '@/lib/types';
 
 // ─── Small shared atoms ───────────────────────────────────────────────────────
 
@@ -86,6 +86,138 @@ function SectionHeader({ title, badge }: { title: string; badge?: React.ReactNod
   );
 }
 
+// ─── Severity ─────────────────────────────────────────────────────────────────
+
+const SEVERITY_STYLE: Record<Severity, { emoji: string; label: string; cls: string }> = {
+  critical:   { emoji: '🔴', label: 'Critical',   cls: 'bg-red-500/10 text-red-400 border-red-500/30' },
+  warning:    { emoji: '🟡', label: 'Warning',    cls: 'bg-amber-500/10 text-amber-400 border-amber-500/30' },
+  suggestion: { emoji: '🔵', label: 'Suggestion', cls: 'bg-blue-500/10 text-blue-400 border-blue-500/30' },
+};
+
+function SeverityBadge({ severity }: { severity: Severity }) {
+  const s = SEVERITY_STYLE[severity];
+  return (
+    <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold
+                      border uppercase tracking-wide whitespace-nowrap ${s.cls}`}>
+      {s.emoji} {s.label}
+    </span>
+  );
+}
+
+// Wrong tool picked, or a protocol schema that doesn't validate — an agent
+// calling this in production gets a wrong result or a hard error.
+function schemaSeverity(passed: boolean): Severity | null {
+  return passed ? null : 'critical';
+}
+
+// 7/10 is the line the backend itself draws for generating a fix (see
+// CLARITY_FIX_THRESHOLD in layer2.ts) — below it is a Warning, exactly at it is
+// a borderline Suggestion, above it isn't flagged at all.
+function claritySeverity(score: number): Severity | null {
+  const n = Math.round(score);
+  if (n < 7) return 'warning';
+  if (n === 7) return 'suggestion';
+  return null;
+}
+
+function confusionSeverity(pair: ConfusionPair): Severity {
+  return pair.severity === 'HIGH' ? 'warning' : 'suggestion';
+}
+
+function simulationSeverity(sim: SimulationResult): Severity | null {
+  if (!sim.correct) return 'critical';
+  if (sim.argWarning) return 'warning';
+  return null;
+}
+
+// ─── Report-level summary ──────────────────────────────────────────────────────
+// Single source of truth for the executive summary, the Layer 2 verdict banner,
+// and the production verdict at the bottom — all three read from this so the
+// numbers never drift from each other.
+
+interface ReportSummary {
+  protocolPassed: number;
+  protocolTotal: number;
+  behaviorLabel: 'Strong' | 'Moderate' | 'Weak' | 'Not run';
+  compatibilityPassed: number;
+  compatibilityTotal: number;
+  clarityAverage: number | null;
+  healthScore: number;
+  criticalCount: number;
+  warningCount: number;
+  suggestionCount: number;
+  improvementOpportunities: number;
+  productionStatus: 'ready' | 'minor' | 'not-ready';
+  highlights: string[];
+  layer2Ran: boolean;
+}
+
+function computeReportSummary(layer1: Layer1Report, layer2: Layer2Report | null): ReportSummary {
+  const protocolTotal = layer1.results.length;
+  const protocolPassed = layer1.results.filter(r => r.schemaPassed).length;
+  const protocolRate = protocolTotal > 0 ? protocolPassed / protocolTotal : 1;
+
+  const layer2Ran = layer2 !== null;
+  const compatibilityTotal = layer2?.simulation.length ?? 0;
+  const compatibilityPassed = layer2?.simulationScore ?? 0;
+  const compatibilityRate = compatibilityTotal > 0 ? compatibilityPassed / compatibilityTotal : 1;
+
+  const clarityAverage = layer2 && layer2.clarity.length > 0
+    ? layer2.clarity.reduce((sum, c) => sum + c.score, 0) / layer2.clarity.length
+    : null;
+  const clarityRate = clarityAverage !== null ? clarityAverage / 10 : 1;
+
+  const behaviorLabel: ReportSummary['behaviorLabel'] =
+    !layer2Ran || clarityAverage === null ? 'Not run' :
+    clarityAverage >= 8 ? 'Strong' :
+    clarityAverage >= 5 ? 'Moderate' : 'Weak';
+
+  // Weighted per spec: protocol 30% + compatibility 40% + clarity 30%. When
+  // Layer 2 hasn't run, only the protocol signal is known, so it carries the
+  // full score rather than pretending the other two components are perfect.
+  const healthScore = layer2Ran
+    ? Math.round(protocolRate * 30 + compatibilityRate * 40 + clarityRate * 30)
+    : Math.round(protocolRate * 100);
+
+  const schemaFailures = protocolTotal - protocolPassed;
+  const scenarioFailures = layer2 ? layer2.simulation.filter(s => !s.correct).length : 0;
+  const criticalCount = schemaFailures + scenarioFailures;
+
+  const lowClarityCount = layer2 ? layer2.clarity.filter(c => Math.round(c.score) < 7).length : 0;
+  const highConfusionCount = layer2 ? layer2.confusedPairs.filter(p => p.severity === 'HIGH').length : 0;
+  const argWarningCount = layer2 ? layer2.simulation.filter(s => s.correct && s.argWarning).length : 0;
+  const warningCount = lowClarityCount + highConfusionCount + argWarningCount;
+
+  const borderlineClarityCount = layer2 ? layer2.clarity.filter(c => Math.round(c.score) === 7).length : 0;
+  const lowConfusionCount = layer2 ? layer2.confusedPairs.filter(p => p.severity === 'LOW').length : 0;
+  const suggestionCount = borderlineClarityCount + lowConfusionCount;
+
+  const improvementOpportunities = layer2?.verdict.issuesCount ?? 0;
+
+  const productionStatus: ReportSummary['productionStatus'] =
+    criticalCount > 0 ? 'not-ready' :
+    warningCount > 0 ? 'minor' : 'ready';
+
+  const schemaViolationCount = layer2 ? layer2.simulation.filter(s => s.argIssueType === 'schema').length : 0;
+
+  const highlights: string[] = [];
+  if (protocolTotal > 0 && protocolPassed === protocolTotal) {
+    highlights.push('All protocol validation checks passed');
+  }
+  if (layer2Ran && compatibilityTotal > 0 && schemaViolationCount === 0) {
+    highlights.push('No schema violations detected');
+  }
+  if (layer2Ran && compatibilityTotal > 0 && compatibilityRate >= 0.8) {
+    highlights.push('High compatibility score');
+  }
+
+  return {
+    protocolPassed, protocolTotal, behaviorLabel, compatibilityPassed, compatibilityTotal,
+    clarityAverage, healthScore, criticalCount, warningCount, suggestionCount,
+    improvementOpportunities, productionStatus, highlights, layer2Ran,
+  };
+}
+
 // ─── Layer 1 display ──────────────────────────────────────────────────────────
 
 function Layer1Section({ report }: { report: Layer1Report }) {
@@ -114,7 +246,9 @@ function Layer1Section({ report }: { report: Layer1Report }) {
       )}
 
       <div className="space-y-2">
-        {report.results.map((tool, i) => (
+        {report.results.map((tool, i) => {
+          const severity = schemaSeverity(tool.schemaPassed);
+          return (
           <div key={tool.name}
             className="bg-slate-900 border border-slate-800 rounded-xl p-4 hover:border-slate-700 transition-colors">
             <div className="flex items-start gap-3">
@@ -137,10 +271,14 @@ function Layer1Section({ report }: { report: Layer1Report }) {
                   </ul>
                 )}
               </div>
-              <PassBadge passed={tool.schemaPassed} />
+              <div className="flex flex-col items-end gap-1.5">
+                <PassBadge passed={tool.schemaPassed} />
+                {severity && <SeverityBadge severity={severity} />}
+              </div>
             </div>
           </div>
-        ))}
+          );
+        })}
       </div>
     </section>
   );
@@ -172,7 +310,35 @@ function Layer1Skeleton() {
 
 // ─── Layer 2 display ──────────────────────────────────────────────────────────
 
-function SuggestedFixBox({ fix }: { fix: SuggestedFix }) {
+// Problem text: use Claude's own clarity verdict when the fix was triggered by a
+// clarity issue. When it was triggered purely by a scenario failure on an
+// otherwise clear-reading description, there's no "problem" verdict to reuse —
+// state the actual, observed failure instead.
+function problemText(fix: SuggestedFix, clarity?: ClarityResult): string {
+  if (fix.reasons.includes('clarity') && clarity) return clarity.verdict;
+  if (fix.scenarioContext) {
+    return `The description reads fine on its own, but an agent still routed a matching request to ${fix.scenarioContext.pickedTool} instead of this tool.`;
+  }
+  return clarity?.verdict ?? 'Description needs clarification for reliable tool selection.';
+}
+
+// "Why this matters" is synthesized client-side from data already in the report —
+// no extra model call — because it's just restating what the other checks found
+// in terms of production consequence.
+function whyThisMattersText(fix: SuggestedFix): string {
+  const hasClarity = fix.reasons.includes('clarity');
+  const hasScenario = fix.reasons.includes('scenario');
+
+  if (hasScenario && hasClarity) {
+    return `This tool is both hard to distinguish from a similar one and was actually missed by an agent during testing. In production, requests like "${fix.scenarioContext?.request}" will silently route to the wrong tool and return the wrong result.`;
+  }
+  if (hasScenario) {
+    return `In production, a request like "${fix.scenarioContext?.request}" will route to ${fix.scenarioContext?.pickedTool} instead of this tool — the agent won't error, it will just silently do the wrong thing.`;
+  }
+  return `An ambiguous description like this increases the chance an agent picks the wrong tool or passes malformed arguments, even without a confirmed failure yet in this run.`;
+}
+
+function SuggestedFixBox({ fix, clarity }: { fix: SuggestedFix; clarity?: ClarityResult }) {
   const [copied, setCopied] = useState(false);
 
   const copy = async () => {
@@ -186,45 +352,62 @@ function SuggestedFixBox({ fix }: { fix: SuggestedFix }) {
   };
 
   return (
-    <div className="mt-2 bg-emerald-500/5 border border-emerald-500/20 rounded-lg p-3">
-      <div className="flex items-center justify-between gap-2 mb-1.5">
-        <span className="text-xs font-semibold text-emerald-400 uppercase tracking-wide">Recommended fix</span>
-        <button
-          onClick={copy}
-          className="text-xs px-2 py-0.5 rounded border border-emerald-500/30 text-emerald-300
-                     hover:bg-emerald-500/10 transition-colors"
-        >
-          {copied ? 'Copied!' : 'Copy'}
-        </button>
+    <div className="mt-2 bg-emerald-500/5 border border-emerald-500/20 rounded-lg p-3 space-y-2.5">
+      <div>
+        <span className="text-[10px] font-semibold text-slate-500 uppercase tracking-wide">Problem</span>
+        <p className="text-xs text-slate-300 leading-relaxed mt-0.5">{problemText(fix, clarity)}</p>
       </div>
-      <p className="text-xs text-emerald-200/90 leading-relaxed">{fix.suggestedDescription}</p>
-      {fix.scenarioContext && (
-        <p className="text-xs text-emerald-400/70 leading-relaxed mt-1.5">
-          Triggered by Scenario {fix.scenarioContext.scenarioIndex} — agent picked{' '}
-          {fix.scenarioContext.pickedTool} instead of this tool.
-        </p>
-      )}
+
+      <div>
+        <span className="text-[10px] font-semibold text-slate-500 uppercase tracking-wide">Why this matters</span>
+        <p className="text-xs text-slate-400 leading-relaxed mt-0.5">{whyThisMattersText(fix)}</p>
+      </div>
+
+      <div>
+        <div className="flex items-center justify-between gap-2 mb-0.5">
+          <span className="text-[10px] font-semibold text-emerald-400 uppercase tracking-wide">Recommended fix</span>
+          <button
+            onClick={copy}
+            className="text-xs px-2 py-0.5 rounded border border-emerald-500/30 text-emerald-300
+                       hover:bg-emerald-500/10 transition-colors"
+          >
+            {copied ? 'Copied!' : 'Copy'}
+          </button>
+        </div>
+        <p className="text-xs text-emerald-200/90 leading-relaxed">{fix.suggestedDescription}</p>
+        {fix.scenarioContext && (
+          <p className="text-xs text-emerald-400/70 leading-relaxed mt-1.5">
+            Triggered by Scenario {fix.scenarioContext.scenarioIndex} — agent picked{' '}
+            {fix.scenarioContext.pickedTool} instead of this tool.
+          </p>
+        )}
+      </div>
     </div>
   );
 }
 
 function ClarityRow({ result, fix }: { result: ClarityResult; fix?: SuggestedFix }) {
+  const severity = claritySeverity(result.score);
   return (
     <div className="py-3 border-b border-slate-800 last:border-0">
       <div className="flex items-start gap-3">
         <ScoreBadge score={result.score} />
         <div className="flex-1 min-w-0">
-          <div className="font-mono text-sm text-slate-200 mb-0.5">{result.name}</div>
+          <div className="flex items-center gap-2 mb-0.5">
+            <div className="font-mono text-sm text-slate-200">{result.name}</div>
+            {severity && <SeverityBadge severity={severity} />}
+          </div>
           <div className="text-xs text-slate-400 leading-relaxed">{result.verdict}</div>
         </div>
       </div>
-      {fix && <SuggestedFixBox fix={fix} />}
+      {fix && <SuggestedFixBox fix={fix} clarity={result} />}
     </div>
   );
 }
 
 function ConfusionRow({ pair }: { pair: ConfusionPair }) {
   const isHigh = pair.severity === 'HIGH';
+  const severity = confusionSeverity(pair);
   return (
     <div className={`rounded-xl p-3 border ${
       isHigh ? 'bg-red-500/5 border-red-500/20' : 'bg-amber-500/5 border-amber-500/20'
@@ -233,6 +416,7 @@ function ConfusionRow({ pair }: { pair: ConfusionPair }) {
         <span className={`font-semibold ${isHigh ? 'text-red-300' : 'text-amber-300'}`}>{pair.tool1}</span>
         <span className="text-slate-500">↔</span>
         <span className={`font-semibold ${isHigh ? 'text-red-300' : 'text-amber-300'}`}>{pair.tool2}</span>
+        <SeverityBadge severity={severity} />
         {isHigh && (
           <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-red-500/20 text-red-300
                            font-sans font-semibold uppercase tracking-wide whitespace-nowrap">
@@ -267,10 +451,14 @@ function SimStatusBadge({ sim }: { sim: SimulationResult }) {
 }
 
 function SimulationRow({ sim, index }: { sim: SimulationResult; index: number }) {
+  const severity = simulationSeverity(sim);
   return (
     <div className="bg-slate-900 border border-slate-800 rounded-xl p-4">
       <div className="flex items-start justify-between gap-3 mb-2">
-        <div className="text-xs text-slate-500 font-mono">Scenario {index + 1}</div>
+        <div className="flex items-center gap-2">
+          <div className="text-xs text-slate-500 font-mono">Scenario {index + 1}</div>
+          {severity && <SeverityBadge severity={severity} />}
+        </div>
         <SimStatusBadge sim={sim} />
       </div>
       <p className="text-sm text-slate-300 mb-3 leading-relaxed">&ldquo;{sim.request}&rdquo;</p>
@@ -306,8 +494,8 @@ function SimulationRow({ sim, index }: { sim: SimulationResult; index: number })
   );
 }
 
-function VerdictBanner({ verdict }: { verdict: Layer2Verdict }) {
-  if (verdict.shipReady) {
+function VerdictBanner({ summary }: { summary: ReportSummary }) {
+  if (summary.productionStatus === 'ready') {
     return (
       <div className="bg-emerald-500/10 border border-emerald-500/30 rounded-xl p-4 flex items-center gap-2">
         <span className="text-emerald-400 text-lg leading-none">✓</span>
@@ -316,23 +504,181 @@ function VerdictBanner({ verdict }: { verdict: Layer2Verdict }) {
     );
   }
 
-  const issueWord = verdict.issuesCount === 1 ? 'issue' : 'issues';
-  const scenarioWord = verdict.scenariosFailed === 1 ? 'scenario' : 'scenarios';
+  const notReady = summary.productionStatus === 'not-ready';
+  const opportunityWord = summary.improvementOpportunities === 1 ? 'improvement opportunity' : 'improvement opportunities';
+  const criticalText = summary.criticalCount > 0
+    ? `${summary.criticalCount} critical failure${summary.criticalCount === 1 ? '' : 's'}`
+    : 'No critical failures';
+  const headline = notReady
+    ? `${summary.criticalCount} critical issue${summary.criticalCount === 1 ? '' : 's'} found before shipping`
+    : `${summary.improvementOpportunities} ${opportunityWord} found before shipping`;
 
   return (
-    <div className="bg-amber-500/10 border border-amber-500/30 rounded-xl p-4">
-      <div className="text-amber-300 font-semibold text-sm mb-1">
-        {verdict.issuesCount} {issueWord} found before shipping
+    <div className={`rounded-xl p-4 border ${
+      notReady ? 'bg-red-500/10 border-red-500/30' : 'bg-amber-500/10 border-amber-500/30'
+    }`}>
+      <div className={`font-semibold text-sm mb-1 ${notReady ? 'text-red-300' : 'text-amber-300'}`}>
+        {headline}
       </div>
-      <div className="text-xs text-amber-200/70">
-        {verdict.readyTools}/{verdict.totalTools} tools ready to ship · {verdict.scenariosFailed} {scenarioWord} failed
-        {' '}· {verdict.issuesCount} {issueWord} need fixing
+      <div className={`text-xs ${notReady ? 'text-red-200/70' : 'text-amber-200/70'}`}>
+        {summary.protocolPassed}/{summary.protocolTotal} Protocol checks passed · {summary.compatibilityPassed}/{summary.compatibilityTotal} Compatibility scenarios passed
+        {' '}· {summary.improvementOpportunities} {opportunityWord} · {criticalText}
       </div>
     </div>
   );
 }
 
-function Layer2Section({ report }: { report: Layer2Report }) {
+// ─── Executive summary (top) & production verdict (bottom) ───────────────────
+
+const PRODUCTION_STATUS_STYLE: Record<ReportSummary['productionStatus'], { emoji: string; label: string; cls: string }> = {
+  ready:      { emoji: '✅', label: 'Ready for Production',            cls: 'text-emerald-300 bg-emerald-500/10 border-emerald-500/30' },
+  minor:      { emoji: '⚠',  label: 'Ready with Minor Improvements',   cls: 'text-amber-300 bg-amber-500/10 border-amber-500/30' },
+  'not-ready':{ emoji: '❌', label: 'Not Ready',                       cls: 'text-red-300 bg-red-500/10 border-red-500/30' },
+};
+
+function ProductionStatusBadge({ status }: { status: ReportSummary['productionStatus'] }) {
+  const s = PRODUCTION_STATUS_STYLE[status];
+  return (
+    <span className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-sm font-semibold border ${s.cls}`}>
+      {s.emoji} {s.label}
+    </span>
+  );
+}
+
+function HealthScoreBadge({ score }: { score: number }) {
+  const cls =
+    score >= 80 ? 'text-emerald-400 border-emerald-500/30 bg-emerald-500/10' :
+    score >= 50 ? 'text-amber-400 border-amber-500/30 bg-amber-500/10' :
+                  'text-red-400 border-red-500/30 bg-red-500/10';
+  return (
+    <div className={`flex flex-col items-center justify-center w-20 h-20 rounded-2xl border flex-shrink-0 ${cls}`}>
+      <span className="text-2xl font-bold leading-none">{score}</span>
+      <span className="text-[9px] uppercase tracking-wide mt-1 opacity-80">Health</span>
+    </div>
+  );
+}
+
+function StatRow({ label, value, tone = 'neutral' }: { label: string; value: string; tone?: 'good' | 'bad' | 'neutral' }) {
+  const cls = tone === 'good' ? 'text-emerald-400' : tone === 'bad' ? 'text-red-400' : 'text-slate-200';
+  return (
+    <div className="flex items-center justify-between py-1.5">
+      <span className="text-xs text-slate-500">{label}</span>
+      <span className={`text-xs font-semibold ${cls}`}>{value}</span>
+    </div>
+  );
+}
+
+function ExecutiveSummary({ summary }: { summary: ReportSummary }) {
+  const protocolOk = summary.protocolTotal > 0 && summary.protocolPassed === summary.protocolTotal;
+  const behaviorTone = summary.behaviorLabel === 'Strong' ? 'good' : summary.behaviorLabel === 'Weak' ? 'bad' : 'neutral';
+  const compatibilityOk = summary.layer2Ran && summary.compatibilityTotal > 0 && summary.compatibilityPassed === summary.compatibilityTotal;
+
+  return (
+    <section className="bg-slate-900 border border-slate-800 rounded-2xl p-5">
+      <div className="flex items-start gap-4 mb-4">
+        <HealthScoreBadge score={summary.healthScore} />
+        <div className="flex-1 min-w-0 pt-1">
+          <h2 className="text-sm font-bold text-slate-200 uppercase tracking-wide mb-2">Executive Summary</h2>
+          <ProductionStatusBadge status={summary.productionStatus} />
+        </div>
+      </div>
+
+      <div className="grid grid-cols-2 gap-x-6">
+        <div>
+          <StatRow
+            label="Protocol Validation"
+            value={`${summary.protocolPassed}/${summary.protocolTotal} Passed`}
+            tone={protocolOk ? 'good' : 'bad'}
+          />
+          <StatRow label="Behavior Validation" value={summary.behaviorLabel} tone={behaviorTone} />
+          <StatRow
+            label="Compatibility Testing"
+            value={summary.layer2Ran ? `${summary.compatibilityPassed}/${summary.compatibilityTotal} Passed` : 'Not run'}
+            tone={summary.layer2Ran ? (compatibilityOk ? 'good' : 'neutral') : 'neutral'}
+          />
+        </div>
+        <div>
+          <StatRow label="Critical Issues" value={String(summary.criticalCount)} tone={summary.criticalCount > 0 ? 'bad' : 'good'} />
+          <StatRow label="Warnings" value={String(summary.warningCount)} tone={summary.warningCount > 0 ? 'neutral' : 'good'} />
+          <StatRow label="Suggestions" value={String(summary.suggestionCount)} />
+        </div>
+      </div>
+
+      {summary.highlights.length > 0 && (
+        <div className="mt-4 pt-4 border-t border-slate-800 space-y-1">
+          {summary.highlights.map(h => (
+            <div key={h} className="text-xs text-emerald-400 flex items-center gap-1.5">
+              <span>✓</span><span>{h}</span>
+            </div>
+          ))}
+        </div>
+      )}
+    </section>
+  );
+}
+
+// 3-4 sentence explanation of exactly why the production verdict landed where it
+// did — built from the same counts shown above it, not a separate judgment call.
+function verdictExplanation(summary: ReportSummary): string[] {
+  const lines: string[] = [];
+
+  if (summary.productionStatus === 'ready') {
+    lines.push(
+      `All ${summary.protocolTotal} protocol check${summary.protocolTotal === 1 ? '' : 's'} passed, and the agent picked the correct tool in ` +
+      `${summary.compatibilityPassed}/${summary.compatibilityTotal} compatibility scenarios${summary.layer2Ran ? '' : ' (behavior validation was not run)'}.`,
+    );
+    if (summary.clarityAverage !== null) {
+      lines.push(`Clarity scores average ${summary.clarityAverage.toFixed(1)}/10 with no confirmed ambiguous tool pairs.`);
+    }
+    lines.push('No critical issues or warnings were found in this run — this server is safe to ship as-is.');
+    return lines;
+  }
+
+  if (summary.productionStatus === 'minor') {
+    lines.push(
+      `Protocol validation and tool selection are solid: ${summary.protocolPassed}/${summary.protocolTotal} schemas valid, ` +
+      `${summary.compatibilityPassed}/${summary.compatibilityTotal} compatibility scenarios correct.`,
+    );
+    lines.push(
+      `${summary.warningCount} warning${summary.warningCount === 1 ? '' : 's'} — low-clarity descriptions, confirmed ambiguous ` +
+      `tool pairs, or argument-quality issues — should be addressed before scaling usage.`,
+    );
+    lines.push('None of these block shipping today, but they are the most likely source of an agent picking the wrong tool under different phrasing.');
+    return lines;
+  }
+
+  lines.push(
+    `${summary.criticalCount} critical issue${summary.criticalCount === 1 ? '' : 's'} — failed protocol schemas and/or scenarios ` +
+    `where the agent picked the wrong tool — mean this server will misroute real requests.`,
+  );
+  lines.push(
+    `${summary.protocolPassed}/${summary.protocolTotal} protocol checks passed and ${summary.compatibilityPassed}/${summary.compatibilityTotal} ` +
+    `compatibility scenarios were handled correctly.`,
+  );
+  if (summary.warningCount > 0) {
+    lines.push(`${summary.warningCount} additional warning${summary.warningCount === 1 ? '' : 's'} should be fixed once the critical issues are resolved.`);
+  }
+  lines.push('Fix the critical issues above before shipping this server.');
+  return lines;
+}
+
+function ProductionVerdict({ summary }: { summary: ReportSummary }) {
+  const s = PRODUCTION_STATUS_STYLE[summary.productionStatus];
+  const lines = verdictExplanation(summary);
+
+  return (
+    <section className={`rounded-2xl border p-5 ${s.cls}`}>
+      <div className="flex items-center gap-2 text-base font-bold mb-3">
+        <span>{s.emoji}</span><span>{s.label}</span>
+      </div>
+      <div className="space-y-1.5 text-sm text-slate-300 leading-relaxed">
+        {lines.map((line, i) => <p key={i}>{line}</p>)}
+      </div>
+    </section>
+  );
+}
+
+function Layer2Section({ report, summary }: { report: Layer2Report; summary: ReportSummary }) {
   const simTotal = report.simulation.length;
   const simPassed = report.simulationScore;
   const fixByName = new Map(report.suggestedFixes.map(f => [f.name, f]));
@@ -340,7 +686,7 @@ function Layer2Section({ report }: { report: Layer2Report }) {
 
   return (
     <section className="space-y-6">
-      <VerdictBanner verdict={report.verdict} />
+      <VerdictBanner summary={summary} />
 
       <SectionHeader title="Layer 2 · Behavior Validation" />
 
@@ -478,6 +824,12 @@ function ResultsContent() {
 
   const hostname = (() => { try { return new URL(url).hostname; } catch { return url; } })();
 
+  // Wait for Layer 2 (success or failure) before computing the summary when AI
+  // checks were requested, so "Behavior Validation: Not run" doesn't flash
+  // briefly while the request is still in flight.
+  const summaryReady = layer1 !== null && !layer1Loading && (!runAi || layer2 !== null || layer2Error !== null);
+  const summary = summaryReady && layer1 ? computeReportSummary(layer1, layer2) : null;
+
   return (
     <div className="min-h-screen bg-slate-950">
       {/* Top bar */}
@@ -493,6 +845,9 @@ function ResultsContent() {
       </header>
 
       <main className="max-w-2xl mx-auto px-4 py-8 space-y-8">
+        {/* Executive summary dashboard — leads the whole report */}
+        {summary && <ExecutiveSummary summary={summary} />}
+
         {/* Server info (once loaded) */}
         {layer1 && !layer1Loading && (
           <div className="flex items-center gap-3 text-sm">
@@ -525,7 +880,10 @@ function ResultsContent() {
         {layer2Error && (
           <ErrorBox message={layer2Error} defaultHeader="Layer 2 failed" />
         )}
-        {layer2 && <Layer2Section report={layer2} />}
+        {layer2 && summary && <Layer2Section report={layer2} summary={summary} />}
+
+        {/* Production verdict — closes out the report */}
+        {summary && <ProductionVerdict summary={summary} />}
 
         {/* Check another */}
         {!layer1Loading && (
