@@ -621,7 +621,7 @@ function StickySummaryBar({ summary, url, authHeader, onExport }: {
           <span className="text-suggestion whitespace-nowrap">🔵 {summary.suggestionCount}</span>
         </div>
         <div className="flex items-center gap-2 flex-shrink-0">
-          <Link href={`/?${reanalyzeParams.toString()}`}
+          <Link href={`/check?${reanalyzeParams.toString()}`}
             className="text-[11px] px-2 py-1 rounded border border-line text-muted
                        hover:text-fg hover:border-suggestion/50 transition-colors flex items-center gap-1 whitespace-nowrap">
             ← Re-analyze
@@ -1219,7 +1219,7 @@ function ResultsContent() {
   }, [layer2Loading]);
 
   useEffect(() => {
-    if (!url) { router.push('/'); return; }
+    if (!url) { router.push('/check'); return; }
 
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 60_000);
@@ -1408,7 +1408,7 @@ function ResultsContent() {
         {/* Check another */}
         {!layer1Loading && (
           <div className="pt-3 border-t border-line print-hide">
-            <Link href="/"
+            <Link href="/check"
               className="text-xs text-muted hover:text-fg transition-colors">
               ← Check another server
             </Link>
