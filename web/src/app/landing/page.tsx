@@ -2,30 +2,21 @@
 
 import { useEffect, useState } from 'react';
 import Link from 'next/link';
+import Image from 'next/image';
 
 const GITHUB_REPO_URL = 'https://github.com/jsva2002-cmyk/mcp-checker';
-
-// ─── Logo ───────────────────────────────────────────────────────────────────
-
-function LogoMark() {
-  return (
-    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" className="text-suggestion flex-shrink-0">
-      <path d="M12 2 L21 7 L21 17 L12 22 L3 17 L3 7 Z" stroke="currentColor" strokeWidth="2" strokeLinejoin="round" />
-    </svg>
-  );
-}
 
 // ─── Navbar ─────────────────────────────────────────────────────────────────
 
 function Navbar() {
   return (
     <header className="border-b border-line">
-      <div className="max-w-6xl mx-auto px-6 py-3 flex items-center justify-between">
-        <Link href="/" className="flex items-center gap-2">
-          <LogoMark />
-          <span className="font-mono font-semibold text-fg text-sm">Problex</span>
+      <div className="max-w-6xl mx-auto py-3 flex items-center justify-between">
+        <Link href="/" className="flex items-center gap-[10px] pl-6">
+          <Image src="/logo-icon.png" alt="" width={253} height={442} className="h-11 w-auto" priority />
+          <Image src="/logo-wordmark.png" alt="Problex" width={1232} height={203} className="h-[22px] w-auto" priority />
         </Link>
-        <div className="flex items-center gap-4">
+        <div className="flex items-center gap-4 pr-6">
           <a
             href={GITHUB_REPO_URL}
             target="_blank"
