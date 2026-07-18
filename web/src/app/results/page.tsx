@@ -1287,6 +1287,31 @@ function tabPanelClass(id: TabId, active: TabId, pageBreak = true): string {
 
 function TabBar({ active, onChange }: { active: TabId; onChange: (t: TabId) => void }) {
   const btnRefs = useRef<Record<string, HTMLButtonElement | null>>({});
+  const scrollRef = useRef<HTMLDivElement>(null);
+  // Scroll-fade hint for narrow viewports where the tab strip overflows and
+  // clips tabs (e.g. "Verdict") off-screen with no other affordance that
+  // more tabs exist. Driven by actual scroll position rather than a
+  // breakpoint, so it naturally stays off whenever every tab already fits.
+  const [fade, setFade] = useState({ left: false, right: false });
+
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    const updateFade = () => {
+      setFade({
+        left: el.scrollLeft > 1,
+        right: el.scrollLeft + el.clientWidth < el.scrollWidth - 1,
+      });
+    };
+    updateFade();
+    el.addEventListener('scroll', updateFade, { passive: true });
+    const observer = new ResizeObserver(updateFade);
+    observer.observe(el);
+    return () => {
+      el.removeEventListener('scroll', updateFade);
+      observer.disconnect();
+    };
+  }, []);
 
   const move = (dir: 1 | -1) => {
     const idx = TABS.findIndex(t => t.id === active);
@@ -1296,30 +1321,36 @@ function TabBar({ active, onChange }: { active: TabId; onChange: (t: TabId) => v
   };
 
   return (
-    <div role="tablist" aria-label="Report sections"
-      className="flex items-center gap-1 border-b border-line px-4 overflow-x-auto print-hide">
-      {TABS.map(t => (
-        <button
-          key={t.id}
-          ref={el => { btnRefs.current[t.id] = el; }}
-          id={`tab-${t.id}`}
-          type="button"
-          role="tab"
-          aria-selected={active === t.id}
-          aria-controls={`panel-${t.id}`}
-          tabIndex={active === t.id ? 0 : -1}
-          onClick={() => onChange(t.id)}
-          onKeyDown={e => {
-            if (e.key === 'ArrowRight') { e.preventDefault(); move(1); }
-            if (e.key === 'ArrowLeft') { e.preventDefault(); move(-1); }
-          }}
-          className={`px-3 py-2.5 text-xs font-medium border-b-2 whitespace-nowrap transition-colors ${
-            active === t.id ? 'border-suggestion text-fg' : 'border-transparent text-muted hover:text-fg'
-          }`}
-        >
-          {t.label}
-        </button>
-      ))}
+    <div className="relative border-b border-line print-hide">
+      <div ref={scrollRef} role="tablist" aria-label="Report sections"
+        className="flex items-center gap-1 px-4 overflow-x-auto">
+        {TABS.map(t => (
+          <button
+            key={t.id}
+            ref={el => { btnRefs.current[t.id] = el; }}
+            id={`tab-${t.id}`}
+            type="button"
+            role="tab"
+            aria-selected={active === t.id}
+            aria-controls={`panel-${t.id}`}
+            tabIndex={active === t.id ? 0 : -1}
+            onClick={() => onChange(t.id)}
+            onKeyDown={e => {
+              if (e.key === 'ArrowRight') { e.preventDefault(); move(1); }
+              if (e.key === 'ArrowLeft') { e.preventDefault(); move(-1); }
+            }}
+            className={`px-3 py-2.5 text-xs font-medium border-b-2 whitespace-nowrap transition-colors ${
+              active === t.id ? 'border-suggestion text-fg' : 'border-transparent text-muted hover:text-fg'
+            }`}
+          >
+            {t.label}
+          </button>
+        ))}
+      </div>
+      <div aria-hidden="true" className={`pointer-events-none absolute inset-y-0 left-0 w-8
+        bg-gradient-to-r from-canvas to-transparent transition-opacity duration-150 ${fade.left ? 'opacity-100' : 'opacity-0'}`} />
+      <div aria-hidden="true" className={`pointer-events-none absolute inset-y-0 right-0 w-8
+        bg-gradient-to-l from-canvas to-transparent transition-opacity duration-150 ${fade.right ? 'opacity-100' : 'opacity-0'}`} />
     </div>
   );
 }
