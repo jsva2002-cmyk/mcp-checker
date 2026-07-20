@@ -39,14 +39,38 @@ export default function PrivacyPage() {
         <ul className="mt-3 space-y-2 text-sm text-fg/85 leading-relaxed list-disc list-outside pl-5">
           <li>We don&rsquo;t require an account, email, or any personal information to use Problex.</li>
           <li>We don&rsquo;t sell or share your data with third parties for marketing or advertising.</li>
-          <li>We don&rsquo;t use tracking cookies or third-party analytics.</li>
         </ul>
+
+        <h2 className="mt-10 text-lg font-semibold text-fg">Analytics</h2>
+        <p className="mt-3 text-sm text-fg/85 leading-relaxed">
+          We use PostHog, a product analytics service, to understand how Problex is used. This helps us see
+          which features are useful and where the product needs improvement.
+        </p>
+        <p className="mt-4 text-sm text-fg/85 leading-relaxed">
+          <span className="text-fg font-medium">What we track:</span> page visits, when a validation check
+          starts and completes, whether it succeeds or fails, and the MCP server URL you submit (so we can
+          see which kinds of servers people are checking — not to identify you personally).
+        </p>
+        <p className="mt-4 text-sm text-fg/85 leading-relaxed">
+          Your IP address is never sent to PostHog in raw form — it&rsquo;s cryptographically hashed
+          (SHA-256) before being used to generate an anonymous identifier, so PostHog never receives your
+          actual IP address.
+        </p>
+        <p className="mt-4 text-sm text-fg/85 leading-relaxed">
+          Auth tokens (used for private/authenticated MCP servers) and API keys are never sent to PostHog
+          under any circumstance, including in error logs — they are explicitly redacted before any error
+          reporting occurs.
+        </p>
+        <p className="mt-4 text-sm text-fg/85 leading-relaxed">
+          You can use Problex without any analytics tracking affecting your ability to run checks —
+          analytics failures never block or degrade the core validation service.
+        </p>
 
         <h2 className="mt-10 text-lg font-semibold text-fg">Third parties</h2>
         <p className="mt-3 text-sm text-fg/85 leading-relaxed">
           Scanned URLs and related data are processed by Anthropic (Claude API) to generate validation
-          reports, and by Vercel and Upstash for hosting and rate limiting. These providers process data on
-          our behalf and are bound by their own privacy and security practices.
+          reports, and by Vercel, Upstash, and PostHog for hosting, rate limiting, and analytics. These
+          providers process data on our behalf and are bound by their own privacy and security practices.
         </p>
 
         <h2 className="mt-10 text-lg font-semibold text-fg">Changes</h2>
