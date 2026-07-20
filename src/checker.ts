@@ -29,6 +29,17 @@ import { Client } from '@modelcontextprotocol/sdk/client';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp';
 import Anthropic from '@anthropic-ai/sdk';
 import { z } from 'zod';
+import { PostHog } from 'posthog-node';
+
+const posthog = new PostHog(
+  process.env.POSTHOG_API_KEY ?? '',
+  {
+    host: process.env.POSTHOG_HOST ?? 'https://us.i.posthog.com',
+    flushAt: 1,
+    flushInterval: 0,
+    enableExceptionAutocapture: true,
+  },
+);
 
 // ─── JSON Schema validator (Layer 1 — unchanged) ─────────────────────────────
 
@@ -977,6 +988,8 @@ async function checkServer(url: string, runAi: boolean): Promise<void> {
     { capabilities: {} }
   );
 
+  posthog.capture({ distinctId: 'anonymous', event: 'cli_check_started', properties: { server_url: url, run_ai: runAi } });
+
   try {
     divider('═');
     console.log(`${BOLD}  MCP Server Checker${RESET}`);
@@ -1060,16 +1073,31 @@ async function checkServer(url: string, runAi: boolean): Promise<void> {
     divider('═');
     console.log();
 
+    posthog.capture({
+      distinctId: 'anonymous',
+      event: 'cli_layer1_completed',
+      properties: {
+        server_url: url,
+        tool_count: results.length,
+        passed_count: passed,
+        failed_count: failed,
+        server_name: mcpClient.getServerVersion()?.name ?? null,
+      },
+    });
+
     if (failed > 0) process.exitCode = 1;
 
     // ── Layer 2 (optional) ────────────────────────────────────────────────────
     if (runAi && anthropic) {
       await runLayer2Checks(tools as McpTool[], anthropic, failed);
+      posthog.capture({ distinctId: 'anonymous', event: 'cli_layer2_completed', properties: { server_url: url, tool_count: tools.length } });
     }
 
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     console.error(`\n  ${RED}Error: ${msg}${RESET}\n`);
+    posthog.captureException(err, 'anonymous', { server_url: url });
+    posthog.capture({ distinctId: 'anonymous', event: 'cli_check_error', properties: { server_url: url, error_message: msg } });
     process.exitCode = 1;
   } finally {
     try { await transport.close(); } catch { /* ignore close errors */ }
@@ -1093,7 +1121,9 @@ program
     await checkServer(url, runAi);
   });
 
-program.parseAsync(process.argv).catch(err => {
-  console.error(err);
-  process.exitCode = 1;
-});
+program.parseAsync(process.argv)
+  .catch(err => {
+    console.error(err);
+    process.exitCode = 1;
+  })
+  .finally(() => posthog.shutdown());
