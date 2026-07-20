@@ -29,6 +29,37 @@ import { Client } from '@modelcontextprotocol/sdk/client';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp';
 import Anthropic from '@anthropic-ai/sdk';
 import { z } from 'zod';
+import { PostHog } from 'posthog-node';
+
+const posthog = new PostHog(
+  process.env.POSTHOG_API_KEY ?? '',
+  {
+    host: process.env.POSTHOG_HOST ?? 'https://us.i.posthog.com',
+    flushAt: 1,
+    flushInterval: 0,
+    enableExceptionAutocapture: true,
+  },
+);
+
+// posthog.captureException() forwards the raw error (message/stack/cause) to
+// PostHog. If ANTHROPIC_API_KEY ever ends up embedded in an SDK error message,
+// it must be scrubbed before the error reaches PostHog.
+function sanitizeErrorForCapture(err: unknown, secrets: Array<string | undefined>): unknown {
+  const values = secrets.filter((s): s is string => !!s);
+  if (values.length === 0) return err;
+
+  const redact = (text: string): string =>
+    values.reduce((acc, secret) => acc.split(secret).join('[redacted]'), text);
+
+  if (typeof err === 'string') return redact(err);
+  if (!(err instanceof Error)) return err;
+
+  const clean = new Error(redact(err.message));
+  clean.name = err.name;
+  if (err.stack) clean.stack = redact(err.stack);
+  if (err.cause !== undefined) clean.cause = sanitizeErrorForCapture(err.cause, values);
+  return clean;
+}
 
 // ─── JSON Schema validator (Layer 1 — unchanged) ─────────────────────────────
 
@@ -977,6 +1008,8 @@ async function checkServer(url: string, runAi: boolean): Promise<void> {
     { capabilities: {} }
   );
 
+  posthog.capture({ distinctId: 'anonymous', event: 'cli_check_started', properties: { server_url: url, run_ai: runAi } });
+
   try {
     divider('═');
     console.log(`${BOLD}  MCP Server Checker${RESET}`);
@@ -1060,16 +1093,31 @@ async function checkServer(url: string, runAi: boolean): Promise<void> {
     divider('═');
     console.log();
 
+    posthog.capture({
+      distinctId: 'anonymous',
+      event: 'cli_layer1_completed',
+      properties: {
+        server_url: url,
+        tool_count: results.length,
+        passed_count: passed,
+        failed_count: failed,
+        server_name: mcpClient.getServerVersion()?.name ?? null,
+      },
+    });
+
     if (failed > 0) process.exitCode = 1;
 
     // ── Layer 2 (optional) ────────────────────────────────────────────────────
     if (runAi && anthropic) {
       await runLayer2Checks(tools as McpTool[], anthropic, failed);
+      posthog.capture({ distinctId: 'anonymous', event: 'cli_layer2_completed', properties: { server_url: url, tool_count: tools.length } });
     }
 
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     console.error(`\n  ${RED}Error: ${msg}${RESET}\n`);
+    posthog.captureException(sanitizeErrorForCapture(err, [process.env.ANTHROPIC_API_KEY]), 'anonymous', { server_url: url });
+    posthog.capture({ distinctId: 'anonymous', event: 'cli_check_error', properties: { server_url: url, error_message: msg } });
     process.exitCode = 1;
   } finally {
     try { await transport.close(); } catch { /* ignore close errors */ }
@@ -1093,7 +1141,9 @@ program
     await checkServer(url, runAi);
   });
 
-program.parseAsync(process.argv).catch(err => {
-  console.error(err);
-  process.exitCode = 1;
-});
+program.parseAsync(process.argv)
+  .catch(err => {
+    console.error(err);
+    process.exitCode = 1;
+  })
+  .finally(() => posthog.shutdown());
