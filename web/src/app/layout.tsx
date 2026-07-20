@@ -6,7 +6,7 @@ const inter = Inter({ subsets: ['latin'] });
 
 export const metadata: Metadata = {
   title: 'Problex',
-  description: 'Validate your MCP server before you ship — protocol conformance, tool clarity, and agent compatibility, in one report.',
+  description: 'Paste any MCP server URL and find out if AI agents can actually use it — zero setup, full report in seconds. Catches tool-confusion bugs that schema validators miss.',
   icons: {
     // favicon.ico first so browsers that ignore <link> tags (or request
     // /favicon.ico directly) still get the branded icon instead of the
