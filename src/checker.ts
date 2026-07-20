@@ -41,6 +41,26 @@ const posthog = new PostHog(
   },
 );
 
+// posthog.captureException() forwards the raw error (message/stack/cause) to
+// PostHog. If ANTHROPIC_API_KEY ever ends up embedded in an SDK error message,
+// it must be scrubbed before the error reaches PostHog.
+function sanitizeErrorForCapture(err: unknown, secrets: Array<string | undefined>): unknown {
+  const values = secrets.filter((s): s is string => !!s);
+  if (values.length === 0) return err;
+
+  const redact = (text: string): string =>
+    values.reduce((acc, secret) => acc.split(secret).join('[redacted]'), text);
+
+  if (typeof err === 'string') return redact(err);
+  if (!(err instanceof Error)) return err;
+
+  const clean = new Error(redact(err.message));
+  clean.name = err.name;
+  if (err.stack) clean.stack = redact(err.stack);
+  if (err.cause !== undefined) clean.cause = sanitizeErrorForCapture(err.cause, values);
+  return clean;
+}
+
 // ─── JSON Schema validator (Layer 1 — unchanged) ─────────────────────────────
 
 const JSON_SCHEMA_TYPES = [
@@ -1096,7 +1116,7 @@ async function checkServer(url: string, runAi: boolean): Promise<void> {
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     console.error(`\n  ${RED}Error: ${msg}${RESET}\n`);
-    posthog.captureException(err, 'anonymous', { server_url: url });
+    posthog.captureException(sanitizeErrorForCapture(err, [process.env.ANTHROPIC_API_KEY]), 'anonymous', { server_url: url });
     posthog.capture({ distinctId: 'anonymous', event: 'cli_check_error', properties: { server_url: url, error_message: msg } });
     process.exitCode = 1;
   } finally {

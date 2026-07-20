@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { runLayer1 } from '@/lib/layer1';
 import { checkRateLimit, getClientIp, rateLimitResponse } from '@/lib/rateLimit';
-import { getPostHogClient, distinctIdFromIp } from '@/lib/posthog';
+import { getPostHogClient, distinctIdFromIp, sanitizeErrorForCapture } from '@/lib/posthog';
 
 export const maxDuration = 60;
 
@@ -59,7 +59,7 @@ export async function POST(request: NextRequest) {
     // Defense in depth: strip the auth token from the message even though nothing
     // upstream is expected to echo it back — never let it reach the client.
     if (authHeader) message = message.split(authHeader).join('[redacted]');
-    posthog.captureException(err, distinctId, { endpoint: '/api/check' });
+    posthog.captureException(sanitizeErrorForCapture(err, [authHeader]), distinctId, { endpoint: '/api/check' });
     posthog.capture({ distinctId, event: 'mcp_check_error', properties: { error_message: message } });
     await posthog.flush();
     return NextResponse.json({ error: message }, { status: 500 });

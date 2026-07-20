@@ -4,7 +4,7 @@ import { getAnthropicApiKey } from '@/lib/env';
 import { checkRateLimit, getClientIp, rateLimitResponse } from '@/lib/rateLimit';
 import { checkDailyAiCap, dailyAiCapResponse } from '@/lib/dailyAiCap';
 import type { ToolInfo } from '@/lib/types';
-import { getPostHogClient, distinctIdFromIp } from '@/lib/posthog';
+import { getPostHogClient, distinctIdFromIp, sanitizeErrorForCapture } from '@/lib/posthog';
 
 export const maxDuration = 60;
 
@@ -27,8 +27,10 @@ export async function POST(request: NextRequest) {
     return dailyAiCapResponse();
   }
 
+  let apiKey: string | undefined;
+
   try {
-    const apiKey = getAnthropicApiKey();
+    apiKey = getAnthropicApiKey();
     if (!apiKey) {
       return NextResponse.json(
         { error: 'ANTHROPIC_API_KEY is not configured. Add it to web/.env.local or the parent .env file.' },
@@ -64,7 +66,7 @@ export async function POST(request: NextRequest) {
     return NextResponse.json(report);
   } catch (err) {
     const message = err instanceof Error ? err.message : 'Unknown error';
-    posthog.captureException(err, distinctId, { endpoint: '/api/check-ai' });
+    posthog.captureException(sanitizeErrorForCapture(err, [apiKey]), distinctId, { endpoint: '/api/check-ai' });
     posthog.capture({ distinctId, event: 'layer2_validation_error', properties: { error_message: message } });
     await posthog.flush();
     return NextResponse.json({ error: message }, { status: 500 });
