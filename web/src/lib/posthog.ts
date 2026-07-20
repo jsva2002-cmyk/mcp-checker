@@ -14,6 +14,11 @@ export function getPostHogClient(): PostHog {
         enableExceptionAutocapture: true,
       },
     );
+    // posthog-node v5 reports batch-send failures via this 'error' event, not by
+    // rejecting capture()/flush(), so safePostHogCall's try/catch never sees them.
+    _client.on('error', (err: unknown) => {
+      console.error('[PostHog] send failed:', err);
+    });
   }
   return _client;
 }
