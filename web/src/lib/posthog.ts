@@ -44,3 +44,15 @@ export function sanitizeErrorForCapture(err: unknown, secrets: Array<string | un
   if (err.cause !== undefined) clean.cause = sanitizeErrorForCapture(err.cause, values);
   return clean;
 }
+
+// Analytics must never affect the actual response. If PostHog is down,
+// misconfigured (bad host/key), or the network call otherwise fails,
+// capture()/flush() can throw — swallow that here so callers can fire
+// analytics without risking the real request handling.
+export async function safePostHogCall(fn: () => Promise<void> | void): Promise<void> {
+  try {
+    await fn();
+  } catch (err) {
+    console.error('[PostHog] call failed:', err);
+  }
+}

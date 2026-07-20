@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { runLayer1 } from '@/lib/layer1';
 import { checkRateLimit, getClientIp, rateLimitResponse } from '@/lib/rateLimit';
-import { getPostHogClient, distinctIdFromIp, sanitizeErrorForCapture } from '@/lib/posthog';
+import { getPostHogClient, distinctIdFromIp, sanitizeErrorForCapture, safePostHogCall } from '@/lib/posthog';
 
 export const maxDuration = 60;
 
@@ -12,8 +12,10 @@ export async function POST(request: NextRequest) {
 
   const { allowed } = await checkRateLimit(clientIp);
   if (!allowed) {
-    posthog.capture({ distinctId, event: 'rate_limit_exceeded', properties: { endpoint: '/api/check' } });
-    await posthog.flush();
+    await safePostHogCall(async () => {
+      posthog.capture({ distinctId, event: 'rate_limit_exceeded', properties: { endpoint: '/api/check' } });
+      await posthog.flush();
+    });
     return rateLimitResponse();
   }
 
@@ -34,24 +36,28 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'Invalid URL format' }, { status: 400 });
     }
 
-    posthog.capture({ distinctId, event: 'mcp_check_started', properties: { server_url: url, has_auth: !!authHeader } });
-    await posthog.flush();
+    await safePostHogCall(async () => {
+      posthog.capture({ distinctId, event: 'mcp_check_started', properties: { server_url: url, has_auth: !!authHeader } });
+      await posthog.flush();
+    });
 
     const report = await runLayer1(url, authHeader);
 
     const passed = report.results.filter(r => r.schemaPassed).length;
-    posthog.capture({
-      distinctId,
-      event: 'layer1_validation_completed',
-      properties: {
-        server_url: url,
-        tool_count: report.toolCount,
-        passed_count: passed,
-        failed_count: report.toolCount - passed,
-        server_name: report.serverName ?? null,
-      },
+    await safePostHogCall(async () => {
+      posthog.capture({
+        distinctId,
+        event: 'layer1_validation_completed',
+        properties: {
+          server_url: url,
+          tool_count: report.toolCount,
+          passed_count: passed,
+          failed_count: report.toolCount - passed,
+          server_name: report.serverName ?? null,
+        },
+      });
+      await posthog.flush();
     });
-    await posthog.flush();
 
     return NextResponse.json(report);
   } catch (err) {
@@ -59,9 +65,11 @@ export async function POST(request: NextRequest) {
     // Defense in depth: strip the auth token from the message even though nothing
     // upstream is expected to echo it back — never let it reach the client.
     if (authHeader) message = message.split(authHeader).join('[redacted]');
-    posthog.captureException(sanitizeErrorForCapture(err, [authHeader]), distinctId, { endpoint: '/api/check' });
-    posthog.capture({ distinctId, event: 'mcp_check_error', properties: { error_message: message } });
-    await posthog.flush();
+    await safePostHogCall(async () => {
+      posthog.captureException(sanitizeErrorForCapture(err, [authHeader]), distinctId, { endpoint: '/api/check' });
+      posthog.capture({ distinctId, event: 'mcp_check_error', properties: { error_message: message } });
+      await posthog.flush();
+    });
     return NextResponse.json({ error: message }, { status: 500 });
   }
 }
